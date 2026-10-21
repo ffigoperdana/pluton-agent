@@ -1,0 +1,29 @@
+name: Standalone Linux Agent
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  source-and-release:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm typecheck && pnpm build && pnpm test:contracts && pnpm validate:standalone
+      - run: pnpm package:release && (cd release && sha256sum -c SHA256SUMS)
+      - run: git diff --exit-code && git diff --check
+  ubuntu-install-and-safety:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # Agent-only build context. No production services, host mounts or privileged Docker.
+      - run: docker build --progress=plain --file tests/ubuntu/Dockerfile --tag pluton-agent-validation:ci .
+      # This workflow validates only. No release, registry, deployment or write permissions.

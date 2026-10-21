@@ -1,0 +1,20 @@
+{
+  "name": "pluton-agent-standalone",
+  "version": "0.7.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@10.20.0",
+  "workspaces": [
+    "agent"
+  ],
+  "scripts": {
+    "build": "pnpm --filter @plutonhq/pluton-agent build",
+    "typecheck": "pnpm --filter @plutonhq/pluton-agent typecheck",
+    "test": "pnpm --filter @plutonhq/pluton-agent test",
+    "test:contracts": "node --test scripts/tests/*.test.mjs",
+    "test:installers": "bash installers/tests/install-agent.test.sh && bash installers/tests/upgrade-agent.test.sh",
+    "validate:standalone": "node scripts/validate-standalone.mjs",
+    "package:release": "node scripts/package-release.mjs"
+  }
+}
