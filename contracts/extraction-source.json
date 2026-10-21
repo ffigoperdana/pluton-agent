@@ -1,0 +1,170 @@
+{
+  "format": 1,
+  "sourceRepository": "https://github.com/ffigoperdana/pluton",
+  "sourceRevision": "9021b1274f3ea084a887446e321bc6984a688497",
+  "agentVersion": "0.7.0",
+  "agentSource": [
+    {
+      "file": "agent/src/backupExclusions.test.ts",
+      "sha256": "5ff00f256d5f5746b1f20f58b3765c306f83e24bbc0625b4f1782ccfb6d46078"
+    },
+    {
+      "file": "agent/src/backupExclusions.ts",
+      "sha256": "305779a720fbe172e0eb6271e2fc36bd0aaa832fdfc2434194c5a910a648d17c"
+    },
+    {
+      "file": "agent/src/backupFilesystem.test.ts",
+      "sha256": "3f952363db42a6e419a7392fd2b0e8d0d764018a4c96b8397f18521fbe1030c7"
+    },
+    {
+      "file": "agent/src/backupFilesystem.ts",
+      "sha256": "b7ab6ce1f18ca0380e595f5ce543bbaa749955b0813a82325b18281e7d477e02"
+    },
+    {
+      "file": "agent/src/backupLifecycle.test.ts",
+      "sha256": "609e33563eaba5a2d07eddd16655661a8e0aa54a232c7700dcb79864ea5af28a"
+    },
+    {
+      "file": "agent/src/backupLifecycle.ts",
+      "sha256": "01a23e5a93d1cdc97f3bea6594e5076413dd87984f85b03d1dfe47b21fe2bcb8"
+    },
+    {
+      "file": "agent/src/client.ts",
+      "sha256": "66e359bb356c5662c436e768e5bc19703ed2c50e08b996c536f6dcd63d536e58"
+    },
+    {
+      "file": "agent/src/config.test.ts",
+      "sha256": "e292523c9beba741a2ad70cb1b35c545fd548f5549746cca4a0513a461c37dde"
+    },
+    {
+      "file": "agent/src/config.ts",
+      "sha256": "6ef32dff93a7f188d1044df12b621215ded8f35892ce970847ae56ef6d692713"
+    },
+    {
+      "file": "agent/src/enrollmentToken.test.ts",
+      "sha256": "0f014eef95e55402bbb4d3271fd4c5dad4b6a9410eaef1894b6e15161d0a3f1e"
+    },
+    {
+      "file": "agent/src/enrollmentToken.ts",
+      "sha256": "f811a6658b9246730a135f7a01e9d7555d408cdfde7fda7ecf5947f7372bbce8"
+    },
+    {
+      "file": "agent/src/errors.test.ts",
+      "sha256": "5112e908c7652e5d67ecf9f506f1f9ebaecbe9f35bd376a7240dadd731ef7f45"
+    },
+    {
+      "file": "agent/src/errors.ts",
+      "sha256": "d40486836d756d3b155c768000e9df58b381fc0b43c3fb65c9e76f1f972a683b"
+    },
+    {
+      "file": "agent/src/filesystemPolicy.test.ts",
+      "sha256": "68ac2b7af2daaeb2003630bf7aec45423a48a7b7bfbc3aa21dc9b3b46c8b518b"
+    },
+    {
+      "file": "agent/src/filesystemPolicy.ts",
+      "sha256": "05ae8437a5658ed24dcc11e112f7a95c8a9576b3cc4ebf40ae268f739453acb4"
+    },
+    {
+      "file": "agent/src/identity.ts",
+      "sha256": "c5546f13bfbaca4a3a1df1b974186f1b48e4088d0889c383e8c7b6f3c583ab6e"
+    },
+    {
+      "file": "agent/src/index.ts",
+      "sha256": "23aea99d92bd687525ec8f32f3a3594d572ff562396be0990ac4b81842ce7118"
+    },
+    {
+      "file": "agent/src/inventory.test.ts",
+      "sha256": "418e4e6d098f739ec21d24422bb12708045c8cc5db6dd42100d413b0e13cb797"
+    },
+    {
+      "file": "agent/src/inventory.ts",
+      "sha256": "22d254eac93e3e5c5c38b184b08ebd9b9dc94d905fc5ac0e28eacc0b27529910"
+    },
+    {
+      "file": "agent/src/lifecyclePolicy.ts",
+      "sha256": "0722008050ee327e50afbc92ea6d9285e90a5befed4407c677ba087cf0f9cd75"
+    },
+    {
+      "file": "agent/src/lifecycleProcess.ts",
+      "sha256": "4c5d2ef9c5390ebb6a6c3a3e8e17aee4ce90798f499d20e638f985900793f591"
+    },
+    {
+      "file": "agent/src/lifecycleTransport.test.ts",
+      "sha256": "9ebdc7b2b723df22da05ce85a3a7e066a6e6556731cc857fc856d4f9c4f2e20f"
+    },
+    {
+      "file": "agent/src/operationalHardening.test.ts",
+      "sha256": "26c4f9ffd89c94758b428756850aac455d22c8419f301d8486dfba16503524af"
+    },
+    {
+      "file": "agent/src/progressDelivery.ts",
+      "sha256": "78c7d3c2ebe16b14943a33daeb5723610863da0f6148c85fc13a8d4c94328c71"
+    },
+    {
+      "file": "agent/src/protocol.test.ts",
+      "sha256": "c9ee0aad20e777a0ba88a15d67530845b2845c80ee273c50af54016e4c6de404"
+    },
+    {
+      "file": "agent/src/protocol.ts",
+      "sha256": "a095f5216d04bdaea22ebd04cd8af80d39746c373ab457855b99e440365b97ce"
+    },
+    {
+      "file": "agent/src/resticParent.test.ts",
+      "sha256": "6da2d827c7996e2a2d412d945a25e38ca8004df5bd00262f9e97ebdbb89b7204"
+    },
+    {
+      "file": "agent/src/resticParent.ts",
+      "sha256": "eef558958b9f0d6ab273bfdea8826666ae0dc8721a52551e1c9f5a444783c3cc"
+    },
+    {
+      "file": "agent/src/runtime.ts",
+      "sha256": "89fb7c357291bab42fc73628fa4f2bbdf798ef55ede69563e89445b22f0369a9"
+    },
+    {
+      "file": "agent/src/sourceAccessPolicy.test.ts",
+      "sha256": "57658cffada44abdcc7b8a5857cddfb93c6d97e0c200635fe854b00cde80219f"
+    },
+    {
+      "file": "agent/src/sourceAccessPolicy.ts",
+      "sha256": "dc03e60f24a1a8d3065b88e1a430981b20fdb326d57ec61d76339380c8c42daa"
+    },
+    {
+      "file": "agent/src/sourceAccessRuntime.test.ts",
+      "sha256": "0836c212459b018515ecd229fc730fb58a9f114e6fe892273a0d64043ee0ec7e"
+    },
+    {
+      "file": "agent/src/transport.ts",
+      "sha256": "176017fee31bfd0138e743f1957e54a7011a34a7040ddbae59b9174ba32d1ebc"
+    },
+    {
+      "file": "agent/src/types.ts",
+      "sha256": "591c87bf41b4f7b4c2727cf5c3140e321b6fdacbdb74ece3e21de3eb6be7f713"
+    },
+    {
+      "file": "agent/src/upgradeGuard.test.ts",
+      "sha256": "fda205ccc85342444e6b09f16901b8a005e9f8eaeeda6aad81d25f856474b4f2"
+    },
+    {
+      "file": "agent/src/upgradeGuard.ts",
+      "sha256": "3e78e47aeea89d127a87aefa5f96016c56b28f503a06f67b775ee37cce0d5bdb"
+    }
+  ],
+  "serverContracts": [
+    {
+      "file": "backend/src/utils/agentProtocol.ts",
+      "sha256": "8422a1cd2fd6c3fc4de159238f3a58d5f72ae4d3a40440aacd574c6019d4052d"
+    },
+    {
+      "file": "backend/src/utils/backupExclusions.ts",
+      "sha256": "8734eddc1a1634f28216d5b5986d2def8a66d3a377ac5406446e1fa80385070a"
+    },
+    {
+      "file": "backend/src/types/agents.ts",
+      "sha256": "d7385c71bfabed148f39548b133684cb3bc75dcc9e1bff539773a1bf91f1e45f"
+    },
+    {
+      "file": "backend/src/utils/agentSourceAccess.ts",
+      "sha256": "f9b9e88c3183a145b20a283e4267885d68ed9b68bdc17aa983318ed7ce33fb57"
+    }
+  ]
+}

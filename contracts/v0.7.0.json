@@ -1,0 +1,190 @@
+{
+  "format": 1,
+  "contract": "pluton-agent-0.7.0",
+  "description": "Synthetic golden vectors produced by actual pinned server implementations, not a new wire protocol.",
+  "request": {
+    "secret": "synthetic-contract-secret",
+    "timestamp": "4102444800000",
+    "nonce": "synthetic-nonce-01",
+    "method": "POST",
+    "path": "/api/agent/heartbeat",
+    "body": "{\"agentVersion\":\"0.7.0\",\"capabilities\":{\"backupExclusionsVersion\":1}}",
+    "signature": "56BiG052z3f53hOmXVZfgFUOduRSb5Vu6fBdbpfHKxE="
+  },
+  "command": {
+    "secret": "synthetic-contract-secret",
+    "id": "command-01",
+    "type": "BACKUP_FILESYSTEM",
+    "payload": {
+      "version": 4,
+      "synthetic": true
+    },
+    "idempotencyKey": "idempotency-01",
+    "leaseExpiresAt": "2099-01-01T00:00:00.000Z",
+    "leaseToken": "synthetic-lease-token",
+    "signatureTimestamp": "4102444800000",
+    "signature": "/KjIobEmmoY4ZrKv/RKtzZH6Hn/QED28jxC7qMe9nuE="
+  },
+  "exclusions": [
+    {
+      "input": [],
+      "accepted": true,
+      "parsed": [],
+      "restic": []
+    },
+    {
+      "input": [
+        ".git",
+        " .cache/ ",
+        "node_modules",
+        "**/cache",
+        "node_modules/**"
+      ],
+      "accepted": true,
+      "parsed": [
+        ".git",
+        ".cache",
+        "node_modules",
+        "**/cache",
+        "node_modules/**"
+      ],
+      "restic": [
+        "/srv/example-app/**/.git",
+        "/srv/example-app/**/.cache",
+        "/srv/example-app/**/node_modules",
+        "/srv/example-app/**/cache",
+        "/srv/example-app/node_modules"
+      ]
+    },
+    {
+      "input": [
+        "../escape"
+      ],
+      "accepted": false
+    },
+    {
+      "input": [
+        "/absolute"
+      ],
+      "accepted": false
+    },
+    {
+      "input": [
+        "**/a/**/b"
+      ],
+      "accepted": false
+    },
+    {
+      "input": [
+        "!negation"
+      ],
+      "accepted": false
+    },
+    {
+      "input": [
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache",
+        "cache"
+      ],
+      "accepted": false
+    }
+  ]
+}
