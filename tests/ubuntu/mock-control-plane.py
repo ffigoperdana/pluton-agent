@@ -1,5 +1,6 @@
 """Disposable TLS/HMAC enrollment fixture. No live server, token or inventory."""
 import base64
+import argparse
 import hashlib
 import hmac
 import http.server
@@ -9,10 +10,26 @@ import ssl
 import time
 from pathlib import Path
 
-private = Path('/tmp/pluton-install-private')
-secret = secrets.token_hex(32)
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--native-vm', action='store_true', help='Idle synthetic poll responses; disposable booted VM only')
+args = parser.parse_args()
+if args.native_vm:
+    assert Path('/opt/pluton-disposable-native-vm').is_file(), 'Disposable native VM sentinel required'
+    assert Path('/proc/1/comm').read_text().strip() == 'systemd', 'Booted systemd VM required'
+private = Path('/var/lib/pluton-synthetic-control-plane' if args.native_vm else '/tmp/pluton-install-private')
+assert private.is_dir() and private.stat().st_mode & 0o077 == 0, 'Private synthetic fixture directory required'
+secret_file = private / 'server-secret'
+if args.native_vm and secret_file.exists():
+    secret = secret_file.read_text()
+else:
+    secret = secrets.token_hex(32)
+    if args.native_vm:
+        secret_file.write_text(secret)
+        secret_file.chmod(0o600)
 token = private.joinpath('token').read_text().strip()
 proof = {'enrollments': 0, 'heartbeats': 0, 'polls': 0}
+if args.native_vm and private.joinpath('proof.json').exists():
+    proof = json.loads(private.joinpath('proof.json').read_text())
 nonces = set()
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -31,7 +48,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 proof['enrollments'] += 1
                 result = dict(deviceId='synthetic-device', agentId='synthetic-agent', secret=secret, pollIntervalSeconds=15)
             else:
-                assert self.path == '/api/agent/heartbeat'  # Never lease work to prove health.
+                assert self.path == '/api/agent/heartbeat' or (args.native_vm and self.path == '/api/agent/poll')
                 stamp = self.headers['x-pluton-agent-timestamp']
                 nonce = self.headers['x-pluton-agent-nonce']
                 assert self.headers['x-pluton-agent-id'] == 'synthetic-agent'
@@ -41,9 +58,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 signature = base64.b64encode(hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).digest()).decode()
                 assert hmac.compare_digest(signature, self.headers['x-pluton-agent-signature'])
                 nonces.add(nonce)
-                assert body['agentVersion'] == '0.7.0' and body['capabilities']['backupExclusionsVersion'] == 1
-                proof['heartbeats'] += 1
-                result = {}
+                if self.path == '/api/agent/heartbeat':
+                    assert body['agentVersion'] == '0.7.0' and body['capabilities']['backupExclusionsVersion'] == 1
+                    proof['heartbeats'] += 1
+                    result = {}
+                else:
+                    assert body == {}
+                    proof['polls'] += 1
+                    result = {'command': None}  # Never lease work in native service acceptance.
             private.joinpath('proof.json').write_text(json.dumps(proof))
             response = json.dumps({'success': True, 'result': result}).encode()
             self.send_response(200)

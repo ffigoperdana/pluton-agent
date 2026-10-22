@@ -1,7 +1,11 @@
-FROM ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956 AS validation
-LABEL io.pluton.test.scope="standalone-agent-ubuntu2204"
+ARG UBUNTU_VERSION=22.04
+FROM ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956 AS ubuntu-22.04
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS ubuntu-24.04
+FROM ubuntu-${UBUNTU_VERSION} AS validation
+ARG UBUNTU_VERSION
+LABEL io.pluton.test.scope="standalone-agent-ubuntu${UBUNTU_VERSION}"
 RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends \
-    ca-certificates curl git xz-utils bzip2 unzip locales python3 openssl systemd \
+    ca-certificates curl git xz-utils bzip2 unzip locales python3 openssl systemd acl \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
     && mkdir -p /opt/test-locales \
     && localedef --no-archive --inputfile en_US --charmap UTF-8 /opt/test-locales/en_US.UTF-8
@@ -16,7 +20,7 @@ ENV PATH=/opt/pluton-agent/runtime/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:
 RUN ln -s /opt/pluton-agent/runtime/bin/node /usr/local/bin/node \
     && printf '#!/bin/sh\nexec /opt/pluton-agent/runtime/bin/node /opt/pluton-agent/runtime/lib/node_modules/corepack/dist/corepack.js pnpm "$@"\n' > /usr/local/bin/pnpm \
     && chmod 0755 /usr/local/bin/pnpm \
-    && useradd -m -u 1000 tester \
+    && useradd -m tester \
     && bash tests/ubuntu/provision-phase5.sh \
     && git init && git config user.name 'Synthetic Test' && git config user.email 'test@example.invalid' \
     && git add -- . && git commit -m 'Synthetic isolated extraction test' \
@@ -26,7 +30,7 @@ ENV COREPACK_HOME=/opt/test-corepack COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 ENV PLUTON_PHASE5_TEST_TOOLS=/opt/pluton-phase5-tools PLUTON_EXCLUSIONS_RESTIC=/opt/pluton-agent/bin/restic
 USER tester
 RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm typecheck && pnpm test && pnpm test:contracts \
-    && pnpm test:installers && bash -n install-agent.sh upgrade-agent.sh installers/*.sh tests/ubuntu/*.sh \
+    && pnpm test:installers && pnpm validate:standalone && bash -n install-agent.sh upgrade-agent.sh installers/*.sh tests/ubuntu/*.sh \
     && pnpm package:release && cp release/release-manifest.json /tmp/first-release.json \
     && pnpm package:release && cmp release/release-manifest.json /tmp/first-release.json \
     && (cd release && sha256sum -c SHA256SUMS)

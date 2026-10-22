@@ -21,9 +21,13 @@ jobs:
       - run: git diff --exit-code && git diff --check
   ubuntu-install-and-safety:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['22.04', '24.04']
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       # Agent-only build context. No production services, host mounts or privileged Docker.
-      - run: docker build --progress=plain --file tests/ubuntu/Dockerfile --tag pluton-agent-validation:ci .
+      - run: docker build --platform linux/amd64 --progress=plain --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} --file tests/ubuntu/Dockerfile --tag pluton-agent-validation:ci-${{ matrix.ubuntu }} .
       # This workflow validates only. No release, registry, deployment or write permissions.

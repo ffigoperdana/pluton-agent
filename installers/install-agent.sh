@@ -65,8 +65,10 @@ usage() {
 Usage:
   sudo ./installers/install-agent.sh --server <https://server> --allowed-root <absolute-path> [options]
   sudo ./installers/install-agent.sh uninstall [--purge] [--force]
+  ./install-agent.sh --check --server <https://server> --allowed-root <absolute-path>
 
 Install options:
+  --check                      Read-only compatibility check; no root, token, network or writes.
   --server <url>               Pluton server origin reachable by this host.
   --allowed-root <path>        Absolute source root; repeat for additional roots.
   --allow-insecure-http        Required only for an explicitly trusted-LAN HTTP server.
@@ -122,6 +124,11 @@ configure_paths() {
 parse_arguments() {
 	while (($#)); do
 		case "$1" in
+			--check)
+				[[ "$ACTION" == 'install' ]] || fail '--check cannot be combined with uninstall or repeated.'
+				ACTION='check'
+				shift
+				;;
 			uninstall)
 				[[ "$ACTION" == 'install' ]] || fail 'uninstall may only be specified once.'
 				ACTION='uninstall'
@@ -184,6 +191,9 @@ parse_arguments() {
 	if [[ -n "$ENROLLMENT_TOKEN" && "$TOKEN_STDIN" == 'true' ]]; then
 		fail 'Choose either --token or --token-stdin.'
 	fi
+	if [[ "$ACTION" == 'check' && ( -n "$ENROLLMENT_TOKEN" || "$TOKEN_STDIN" == 'true' || "$REENROLL" == 'true' || "$FORCE" == 'true' ) ]]; then
+		fail '--check does not accept enrollment credentials or mutation options.'
+	fi
 }
 
 require_root() {
@@ -192,17 +202,26 @@ require_root() {
 }
 
 require_commands() {
-	local -a commands=(awk bzip2 cat chmod chown cp curl dirname getent grep groupadd head id install mktemp mv realpath rm runuser sed sha256sum systemctl tar uname unzip useradd)
+	local -a commands=(awk bzip2 cat chmod chown cp curl cut dirname find getent grep groupadd head id install mktemp mv readlink realpath rm runuser sed sha256sum sort stat systemctl tar uname unzip useradd xargs xz)
 	local command
 	for command in "${commands[@]}"; do
 		command -v "$command" >/dev/null 2>&1 || fail "Required utility is unavailable: $command"
 	done
 }
 
+validate_os_release() {
+	case "$1:$2" in
+		ubuntu:22.04|ubuntu:24.04) ;;
+		*) fail 'Unsupported operating system. Installer targets Ubuntu Server 22.04 or 24.04 LTS only; 24.04 native VM acceptance is pending. Debian derivatives and other Ubuntu releases are unsupported.' ;;
+	esac
+}
+
 validate_platform() {
 	if is_test_mode; then
+		validate_os_release "${PLUTON_AGENT_TEST_OS:-ubuntu}" "${PLUTON_AGENT_TEST_VERSION:-22.04}"
 		[[ "${PLUTON_AGENT_TEST_ARCH:-x86_64}" == 'x86_64' ]] || fail 'Unsupported architecture. This installer currently supports x86_64 only; arm64 can be added as a separate target.'
 		[[ "${PLUTON_AGENT_TEST_SYSTEMD:-present}" == 'present' ]] || fail 'systemd is required for this installer.'
+		[[ "${PLUTON_AGENT_TEST_CGROUP:-v2}" == v2 ]] || fail 'Unified cgroup v2 is required.'
 		return
 	fi
 
@@ -210,18 +229,43 @@ validate_platform() {
 	[[ -r /etc/os-release ]] || fail 'Could not identify the operating system.'
 	# shellcheck disable=SC1091
 	. /etc/os-release
-	case "${ID:-}" in
-		ubuntu|debian|linuxmint|pop) ;;
-		*)
-			[[ " ${ID_LIKE:-} " == *' debian '* ]] || fail 'Unsupported operating system. Ubuntu/Debian-family systems are supported initially.'
-			;;
-	esac
+	validate_os_release "${ID:-}" "${VERSION_ID:-}"
 	case "$(uname -m)" in
 		x86_64|amd64) ;;
 		*) fail 'Unsupported architecture. This installer currently supports x86_64 only; arm64 can be added as a separate target.' ;;
 	esac
 	systemctl --version >/dev/null 2>&1 || fail 'systemd is required for this installer.'
 	[[ -d /run/systemd/system ]] || fail 'systemd must be the active service manager on this host.'
+	[[ -r /sys/fs/cgroup/cgroup.controllers ]] || fail 'Unified cgroup v2 is required; inspect the boot configuration with the host owner.'
+}
+
+validate_fresh_install() {
+	[[ ! -e "$INSTALL_ROOT" && ! -L "$INSTALL_ROOT" && ! -e "$CONFIG_FILE" && ! -L "$CONFIG_FILE" &&
+	   ! -e "$STATE_DIR" && ! -L "$STATE_DIR" && ! -e "$SYSTEMD_UNIT" && ! -L "$SYSTEMD_UNIT" ]] ||
+		fail 'Fresh standalone installation only; existing Agents require an explicitly reviewed upgrade or migration.'
+}
+
+compatibility_preflight() {
+	# Do not call configure_paths here: its fixture path creates directories.
+	INSTALL_ROOT='/opt/pluton-agent'
+	STATE_DIR='/var/lib/pluton-agent'
+	CONFIG_FILE='/etc/pluton-agent.env'
+	SYSTEMD_UNIT="/etc/systemd/system/$SERVICE_NAME"
+	validate_platform
+	validate_fresh_install
+	validate_server_url
+	validate_allowed_roots
+	if [[ -n "$CA_FILE" ]]; then
+		[[ "$CA_FILE" == /* && -f "$CA_FILE" && -r "$CA_FILE" ]] || fail '--ca-file must be an existing readable absolute PEM file.'
+	fi
+	local source_file
+	for source_file in package.json pnpm-lock.yaml pnpm-workspace.yaml agent/package.json agent/tsconfig.json agent/src/index.ts contracts/extraction-source.json scripts/validate-standalone.mjs; do
+		[[ -f "$REPOSITORY_ROOT/$source_file" && ! -L "$REPOSITORY_ROOT/$source_file" ]] || fail 'Incomplete standalone source tree; use a reviewed immutable checkout.'
+	done
+	grep -Eq '"packageManager": *"pnpm@10\.20\.0"' "$REPOSITORY_ROOT/package.json" || fail 'Incompatible source packageManager pin.'
+	log 'PASS local read-only prerequisites: Ubuntu target, x86_64, systemd, unified cgroup v2, utilities, source layout, canonical roots, no existing installation.'
+	log 'Ubuntu 24.04 native VM acceptance is pending. This check does not prove systemd activation, controller limits, service-user ACLs, TLS reachability, source integrity or enrollment.'
+	log 'Before installation: verify the reviewed immutable commit/CI, DNS/time/CA trust, outbound HTTPS and a fresh authenticated one-time token. No token was read and no network request was sent.'
 }
 
 validate_server_url() {
@@ -812,7 +856,7 @@ enable_and_start_service() {
 
 install_agent() {
 	if ! is_test_mode; then
-		[[ ! -e "$INSTALL_ROOT" && ! -e "$CONFIG_FILE" && ! -e "$STATE_DIR/identity.json" ]] || fail 'Fresh standalone installation only; existing Agents require an explicitly reviewed upgrade or migration.'
+		validate_fresh_install
 	fi
 	validate_server_url
 	validate_allowed_roots
@@ -864,8 +908,13 @@ uninstall_agent() {
 }
 
 main() {
-	configure_paths
 	parse_arguments "$@"
+	if [[ "$ACTION" == 'check' ]]; then
+		[[ "$TEST_MODE" == 0 ]] || fail '--check cannot use installer test mode.'
+		compatibility_preflight
+		return
+	fi
+	configure_paths
 	require_root
 	if [[ "$ACTION" == 'uninstall' ]]; then
 		if ! is_test_mode; then

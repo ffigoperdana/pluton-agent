@@ -292,6 +292,69 @@ test_changed_source_reuses_tools_but_rebuilds_app() {
 	assert_private_runtime_access "$root"
 }
 
+test_ubuntu_platform_and_preflight() {
+	local version root output
+	for version in 22.04 24.04; do
+		( TEST_MODE=1 PLUTON_AGENT_TEST_VERSION="$version"; validate_platform ) || fail "Ubuntu $version rejected."
+	done
+	for version in 20.04 24.10 26.04 ''; do
+		if ( validate_os_release ubuntu "$version" ) >/dev/null 2>&1; then fail "Untested Ubuntu $version accepted."; fi
+	done
+	if ( validate_os_release debian 12 ) >/dev/null 2>&1; then fail 'Debian accepted.'; fi
+	if ( TEST_MODE=1 PLUTON_AGENT_TEST_CGROUP=v1; validate_platform ) >/dev/null 2>&1; then fail 'cgroup v1 accepted.'; fi
+	root="$(make_root preflight)"
+	# Exercise the actual public entry point without root or path configuration.
+	# Host probes are separately exercised by fresh-install.sh on each Ubuntu.
+	output="$(
+		TEST_MODE=0
+		validate_platform() { :; }
+		validate_fresh_install() { :; }
+		configure_paths() { fail 'Preflight configured mutable paths.'; }
+		require_root() { fail 'Preflight required privilege.'; }
+		main --check --server https://localhost --allowed-root "$root/source"
+	)" || fail 'Read-only preflight failed.'
+	[[ "$output" == *'No token was read'* ]] || fail 'Preflight omitted enrollment limitation.'
+	[[ ! -e "$root/opt" && ! -e "$root/etc" ]] || fail 'Preflight wrote installation paths.'
+	for option in '--token secret' '--token-stdin' '--re-enroll' '--force' 'uninstall' '--purge'; do
+		# Intentional option splitting for these fixed, synthetic argument fixtures.
+		if ( IFS=' '; read -ra flags <<< "$option"; parse_arguments --check "${flags[@]}" ) >/dev/null 2>&1; then fail "Preflight accepted $option"; fi
+	done
+	for path in "$root/opt/pluton-agent" "$root/etc/pluton-agent.env" "$root/var/lib/pluton-agent/identity.json" "$root/etc/systemd/system/pluton-agent.service"; do
+		mkdir -p "$(dirname "$path")"
+		ln -s "$root/nonexistent" "$path"
+		if ( INSTALL_ROOT="$root/opt/pluton-agent"; CONFIG_FILE="$root/etc/pluton-agent.env"; STATE_DIR="$root/var/lib/pluton-agent"; SYSTEMD_UNIT="$root/etc/systemd/system/pluton-agent.service"; validate_fresh_install ) >/dev/null 2>&1; then fail 'Dangling existing-install link accepted.'; fi
+		rm "$path"
+		if [[ -d "$root/var/lib/pluton-agent" ]]; then rmdir "$root/var/lib/pluton-agent"; fi
+	done
+}
+
+test_fresh_failure_boundaries() {
+	local root
+	root="$(make_root fresh-download-failure)"
+	if (
+		TEST_MODE=1; PLUTON_AGENT_TEST_ROOT="$root"
+		prepare_private_node_runtime() { fail 'Synthetic pre-activation provisioning failure.'; }
+		main --server https://localhost --allowed-root "$root/source"
+	) > "$root/failure.log" 2>&1; then fail 'Fresh provisioning failure succeeded.'; fi
+	assert_missing "$root/opt/pluton-agent"
+	assert_missing "$root/etc/pluton-agent.env"
+	assert_missing "$root/etc/systemd/system/pluton-agent.service"
+	assert_missing "$root/var/lib/pluton-agent/identity.json"
+	[[ -z "$(find "$root/opt" -name '.pluton-agent-stage.*' -print -quit)" ]] || fail 'Failed fresh download left staging artifacts.'
+	root="$(make_root fresh-enrollment-failure)"
+	if PLUTON_AGENT_TEST_ENROLL_FAIL=1 base_install "$root" > "$root/failure.log" 2>&1; then fail 'Fresh enrollment failure succeeded.'; fi
+	assert_missing "$root/service-active"
+	assert_missing "$root/etc/systemd/system/pluton-agent.service"
+	assert_missing "$root/var/lib/pluton-agent/identity.json"
+	# Existing fresh-install behavior retains private post-activation files for
+	# review. Never pretend those residuals are a clean install or auto-purge them.
+	assert_file "$root/opt/pluton-agent/.verified-install"
+	assert_file "$root/etc/pluton-agent.env"
+	if ( INSTALL_ROOT="$root/opt/pluton-agent"; CONFIG_FILE="$root/etc/pluton-agent.env"; STATE_DIR="$root/var/lib/pluton-agent"; SYSTEMD_UNIT="$root/etc/systemd/system/pluton-agent.service"; validate_fresh_install ) >/dev/null 2>&1; then fail 'Partial failed install admitted as fresh.'; fi
+}
+
+test_ubuntu_platform_and_preflight
+test_fresh_failure_boundaries
 test_fresh_install_and_generated_files
 test_reinstall_preserves_identity_and_private_runtime_access
 test_failed_update_restores_previous_installation
