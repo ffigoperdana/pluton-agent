@@ -15,7 +15,8 @@ COPY . .
 RUN touch /opt/pluton-disposable-ubuntu-test && chmod 0600 /opt/pluton-disposable-ubuntu-test \
     && find . -name '*.sh' -type f -exec chmod 0755 {} + \
     && install -m 0755 tests/ubuntu/systemctl-fixture.sh /usr/local/bin/systemctl \
-    && bash tests/ubuntu/fresh-install.sh && bash tests/ubuntu/legacy-refusal.sh /workspace
+    && bash tests/ubuntu/fresh-install.sh && bash tests/ubuntu/partial-recovery.sh \
+    && bash tests/ubuntu/legacy-refusal.sh /workspace
 ENV PATH=/opt/pluton-agent/runtime/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN ln -s /opt/pluton-agent/runtime/bin/node /usr/local/bin/node \
     && printf '#!/bin/sh\nexec /opt/pluton-agent/runtime/bin/node /opt/pluton-agent/runtime/lib/node_modules/corepack/dist/corepack.js pnpm "$@"\n' > /usr/local/bin/pnpm \
@@ -30,7 +31,18 @@ ENV COREPACK_HOME=/opt/test-corepack COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 ENV PLUTON_PHASE5_TEST_TOOLS=/opt/pluton-phase5-tools PLUTON_EXCLUSIONS_RESTIC=/opt/pluton-agent/bin/restic
 USER tester
 RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm typecheck && pnpm test && pnpm test:contracts \
-    && pnpm test:installers && pnpm validate:standalone && bash -n install-agent.sh upgrade-agent.sh installers/*.sh tests/ubuntu/*.sh \
+    && pnpm test:installers && pnpm validate:standalone \
+    && bash -n install-agent.sh upgrade-agent.sh recover-agent-install.sh installers/*.sh installers/lib/*.sh tests/ubuntu/*.sh \
     && pnpm package:release && cp release/release-manifest.json /tmp/first-release.json \
     && pnpm package:release && cmp release/release-manifest.json /tmp/first-release.json \
     && (cd release && sha256sum -c SHA256SUMS)
+
+# Additional synthetic TCP SYN-delay acceptance in a separate private namespace.
+# This target is only run with --network none and NET_ADMIN (never host networking).
+FROM validation AS network-routing
+USER root
+RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+CMD ["node", "tests/ubuntu/network-routing.mjs"]
+
+FROM validation AS default-validation

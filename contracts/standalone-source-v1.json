@@ -1,0 +1,68 @@
+{
+  "format": 1,
+  "agentVersion": "0.7.0",
+  "baseRevision": "095088beeb3a10dc5fdda4f55db07fa4d17240be",
+  "extractionManifestSha256": "418785c9cdf1d3986b19b5671e30a612b7ac791f63b1201f136a274e66fb3404",
+  "changes": [
+    {
+      "file": "agent/src/client.ts",
+      "extractedSha256": "66e359bb356c5662c436e768e5bc19703ed2c50e08b996c536f6dcd63d536e58",
+      "sha256": "91da3a8f31b09a44316ddac1e9c20439cfdb07e98e1dff930f76fcecd98ad2d3",
+      "reason": "Validate response envelopes and classify enrollment rejection without exposing arbitrary server bodies; wire payloads remain unchanged."
+    },
+    {
+      "file": "agent/src/enrollmentState.test.ts",
+      "extractedSha256": null,
+      "sha256": "761f73129f927f414bd0f629e43dfbd2f6c56c9173a85d1d1c18a2547478212f",
+      "reason": "Cover exclusive identity persistence, concurrent enrollment refusal, existing identity preservation and no replay after a lost response."
+    },
+    {
+      "file": "agent/src/errors.test.ts",
+      "extractedSha256": "5112e908c7652e5d67ecf9f506f1f9ebaecbe9f35bd376a7240dadd731ef7f45",
+      "sha256": "f4faf6a7c67343a392ba0e45a105cfdd9581996931f3bcad147c33da81da3659",
+      "reason": "Verify fixed safe network/status classifications and redact arbitrary errors, tokens and response bodies."
+    },
+    {
+      "file": "agent/src/errors.ts",
+      "extractedSha256": "d40486836d756d3b155c768000e9df58b381fc0b43c3fb65c9e76f1f972a683b",
+      "sha256": "b9050561037b0b7d1cf9bee9201c301e91861b204736f32c018297c44d93195c",
+      "reason": "Expose bounded network and enrollment-state diagnostics while retaining fail-closed sanitization."
+    },
+    {
+      "file": "agent/src/identity.ts",
+      "extractedSha256": "c5546f13bfbaca4a3a1df1b974186f1b48e4088d0889c383e8c7b6f3c583ab6e",
+      "sha256": "478627fdb4f85e4fe71c436254a53755472f8510d9beb5b29a4e8926b6d82b65",
+      "reason": "Add an enrollment lock and durable exclusive first-identity creation; normal command-receipt identity updates stay unchanged."
+    },
+    {
+      "file": "agent/src/index.ts",
+      "extractedSha256": "23aea99d92bd687525ec8f32f3a3594d572ff562396be0990ac4b81842ce7118",
+      "sha256": "b43c4b77c99e97c65e216bb5decc81077249cc60f539f061a6bf12129b7df5cc",
+      "reason": "Use exclusive enrollment persistence and expose an explicit read-only HTTPS network diagnostic with no credentials or identity options."
+    },
+    {
+      "file": "agent/src/network.ts",
+      "extractedSha256": null,
+      "sha256": "c0ad32a9d0b2bf026d26185d85442a38d9445bb3fb4b4147bf7be9a8a7e6aff3",
+      "reason": "Resolve and interleave bounded IPv4/IPv6 candidates, retaining pending verified TLS attempts before any HTTP credentials are sent."
+    },
+    {
+      "file": "agent/src/networkPreflight.ts",
+      "extractedSha256": null,
+      "sha256": "945b8adb5aa7e8af31934437f320979fbc0c7d13817451403259e8fbdf949121",
+      "reason": "Probe automatic/IPv4/IPv6 verified HTTPS health GETs without loading identity or sending enrollment credentials."
+    },
+    {
+      "file": "agent/src/transport.test.ts",
+      "extractedSha256": null,
+      "sha256": "07b14dcb1747af83faaeba4fe25049fa1f81a1744e83d7c6a8e745d44f8e6a03",
+      "reason": "Exercise verified dual-stack fallback, DNS/connect/request budgets, TLS rejection, response safety, one-send enrollment and read-only diagnostics."
+    },
+    {
+      "file": "agent/src/transport.ts",
+      "extractedSha256": "176017fee31bfd0138e743f1957e54a7011a34a7040ddbae59b9174ba32d1ebc",
+      "sha256": "c2ec7d8c49dba0fb99bc6edd1df3761b4cf335195bb0c3064e73ff701de6209e",
+      "reason": "Select one verified connection before HTTP dispatch, enforce total response budgets/origin boundaries and avoid automatic request replay."
+    }
+  ]
+}

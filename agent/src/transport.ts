@@ -1,6 +1,8 @@
 import http from "node:http";
 import https from "node:https";
+import type tls from "node:tls";
 import { readFileSync } from "node:fs";
+import { AgentNetworkError, classifyNetworkError, connectServer, serverHostname, type NetworkOptions } from "./network.js";
 import type { AgentConfig } from "./types.js";
 
 export class AgentHttpError extends Error {
@@ -15,13 +17,18 @@ export class AgentHttpError extends Error {
 /** Outbound-only JSON transport. It starts no listener and supports future mTLS material. */
 export class AgentTransport {
   private readonly client: typeof http | typeof https;
-  private readonly tls: https.RequestOptions;
+  private readonly tls: tls.ConnectionOptions;
 
   constructor(
     private readonly config: AgentConfig,
     private readonly timeoutMs = 10_000,
     private readonly maxResponseBytes = 2 * 1024 * 1024,
+    private readonly network: NetworkOptions = {},
   ) {
+    if (config.serverUrl.protocol !== "https:" &&
+        !(config.serverUrl.protocol === "http:" && config.allowInsecureHttp)) {
+      throw new AgentNetworkError("REQUEST_REJECTED");
+    }
     this.client = config.serverUrl.protocol === "https:" ? https : http;
     this.tls =
       config.serverUrl.protocol === "https:"
@@ -43,31 +50,47 @@ export class AgentTransport {
     body: string,
     headers: Record<string, string> = {},
   ): Promise<T> {
+    return this.request<T>("POST", pathname, body, headers);
+  }
+
+  async health(): Promise<unknown> {
+    return this.request("GET", "/api/health", "", {});
+  }
+
+  private async request<T>(method: "GET" | "POST", pathname: string, body: string,
+    headers: Record<string, string>): Promise<T> {
     const url = new URL(pathname, this.config.serverUrl);
-    const response = await new Promise<{ statusCode: number; body: string }>(
+    if (url.origin !== this.config.serverUrl.origin || url.username || url.password || url.hash) {
+      throw new AgentNetworkError("REQUEST_REJECTED");
+    }
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(new AgentNetworkError("REQUEST_TIMEOUT")), this.timeoutMs);
+    let socket: Awaited<ReturnType<typeof connectServer>> | undefined;
+    const agent = this.client === https ? new https.Agent({ keepAlive: false }) : new http.Agent({ keepAlive: false });
+    try {
+      socket = await connectServer(this.config, this.tls, controller.signal, this.network);
+      // A private single-use Agent hands one already connected, TLS-verified
+      // socket to Node's HTTP client. No credentials reached losing candidates.
+      agent.createConnection = () => socket!;
+      const response = await new Promise<{ statusCode: number; body: string }>(
       (resolve, reject) => {
         const abort = (error: Error) => {
-          clearTimeout(deadline);
           reject(error);
           request.destroy();
         };
-        const deadline = setTimeout(
-          () => abort(new Error("Agent request timed out.")),
-          this.timeoutMs,
-        );
         const request = this.client.request(
           {
             protocol: url.protocol,
-            hostname: url.hostname,
+            hostname: serverHostname(url),
             port: url.port || undefined,
             path: `${url.pathname}${url.search}`,
-            method: "POST",
+            method,
+            agent,
             headers: {
               "content-type": "application/json",
               "content-length": Buffer.byteLength(body).toString(),
               ...headers,
             },
-            ...this.tls,
           },
           (res) => {
             let raw = "";
@@ -76,41 +99,38 @@ export class AgentTransport {
             res.on("data", (chunk) => {
               received += Buffer.byteLength(chunk);
               if (received > this.maxResponseBytes)
-                abort(
-                  new Error("Agent response exceeded the safe size limit."),
-                );
+                abort(new AgentNetworkError("RESPONSE_TOO_LARGE"));
               else raw += chunk;
             });
-            res.once("error", reject);
+            res.once("error", () => abort(new AgentNetworkError("CONNECTION_INTERRUPTED")));
             res.once("aborted", () =>
-              reject(new Error("Agent response was interrupted.")),
+              abort(new AgentNetworkError("CONNECTION_INTERRUPTED")),
             );
             res.on("end", () => {
-              clearTimeout(deadline);
               resolve({ statusCode: res.statusCode || 0, body: raw });
             });
           },
         );
-        request.once("error", (error) => {
-          clearTimeout(deadline);
-          reject(error);
-        });
+        const aborted = () => abort(controller.signal.reason);
+        controller.signal.addEventListener("abort", aborted, { once: true });
+        request.once("close", () => controller.signal.removeEventListener("abort", aborted));
+        request.once("error", (error) => reject(classifyNetworkError(error)));
+        if (controller.signal.aborted) { aborted(); return; }
         request.end(body);
       },
     );
-    if (response.statusCode < 200 || response.statusCode >= 300) {
+      if (response.statusCode < 200 || response.statusCode >= 300) {
       throw new AgentHttpError(
         response.statusCode,
         "Server rejected the agent request.",
       );
-    }
-    try {
-      return JSON.parse(response.body) as T;
-    } catch {
-      throw new AgentHttpError(
-        response.statusCode,
-        "Server returned invalid JSON.",
-      );
+      }
+      try { return JSON.parse(response.body) as T; }
+      catch { throw new AgentNetworkError("INVALID_RESPONSE"); }
+    } finally {
+      clearTimeout(deadline);
+      socket?.destroy();
+      agent.destroy();
     }
   }
 }
