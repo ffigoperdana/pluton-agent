@@ -11,6 +11,11 @@ recorded in [the HTTPS/enrollment audit](NETWORK_ENROLLMENT.md) and explicit
 protocol vectors are retained. Byte-identity statements below describe the
 initial extraction, not the subsequent independently versioned transport changes.
 
+The later [Node 22.23.4 security patch](NODE_RUNTIME_SECURITY.md) changes the
+private runtime and upgrade transaction, with an explicit test-source hash delta.
+The frozen dependency lock, including `@types/node` 22.18.13 (a type declaration
+package, not the executable runtime pin), and golden protocol fixtures remain intact.
+
 ## Scope and authority
 
 Source: the merged Pluton main commit recorded in `contracts/extraction-source.json`.

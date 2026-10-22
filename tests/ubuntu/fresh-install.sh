@@ -33,7 +33,9 @@ for attempt in {1..50}; do [[ ! -f /tmp/pluton-install-private/ready ]] || break
 bash install-agent.sh --server https://localhost:18443 --allowed-root /srv/example-app \
   --ca-file /opt/test-trust/ca.pem --token-stdin < /tmp/pluton-install-private/token
 node=/opt/pluton-agent/runtime/bin/node
-[[ "$($node -v)" == v22.18.0 ]]
+expected_node="${PLUTON_EXPECT_NODE_VERSION:-v22.23.4}"
+[[ "$expected_node" == v22.23.4 || "$expected_node" == v22.18.0 ]]
+[[ "$($node -v)" == "$expected_node" ]]
 /opt/pluton-agent/bin/restic version | grep -F '0.19.1'
 /opt/pluton-agent/bin/rclone version | sed -n '1p' | grep -F '1.75.1'
 grep -Fx 'distribution=pluton-agent-standalone-v1' /opt/pluton-agent/.verified-install >/dev/null
@@ -78,6 +80,14 @@ cp /opt/pluton-agent/.verified-install /tmp/pluton-install-private/provenance-or
 sed -i '/^distribution=/d' /opt/pluton-agent/.verified-install
 if bash upgrade-agent.sh --check > /tmp/legacy-refusal-result 2>&1; then exit 95; fi
 grep -F 'monorepo installations require separate state-preserving migration approval' /tmp/legacy-refusal-result >/dev/null
+"$node" - <<'NODE'
+const assert = require('node:assert/strict');
+const { productionContext } = require('./installers/lib/upgrade-agent.cjs');
+assert.throws(() => productionContext(process.cwd()), /monorepo migration requires separate review/);
+NODE
+if "$node" installers/lib/upgrade-agent.cjs "$PWD" --check > /tmp/legacy-direct-refusal-result 2>&1; then exit 95; fi
+grep -Fx 'Failed stage: CONTEXT' /tmp/legacy-direct-refusal-result >/dev/null
+grep -Fx 'Error code: UPGRADE_CHECK_FAILED' /tmp/legacy-direct-refusal-result >/dev/null
 [[ "$before" == "$(sha256sum /etc/pluton-agent.env /var/lib/pluton-agent/identity.json)" ]]
 cp /tmp/pluton-install-private/provenance-original /opt/pluton-agent/.verified-install
 for locale in C C.UTF-8 en_US.UTF-8; do

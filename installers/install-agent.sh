@@ -8,7 +8,9 @@ IFS=$'\n\t'
 readonly AGENT_USER='pluton-agent'
 readonly AGENT_GROUP='pluton-agent'
 readonly SERVICE_NAME='pluton-agent.service'
-readonly NODE_VERSION='v22.18.0'
+readonly NODE_VERSION='v22.23.4'
+readonly PREVIOUS_NODE_VERSION='v22.18.0'
+readonly NODE_LINUX_AMD64_SHA256='1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce'
 readonly NODE_DIST_BASE='https://nodejs.org/dist'
 readonly RESTIC_VERSION='0.19.1'
 readonly RCLONE_VERSION='1.75.1'
@@ -479,7 +481,7 @@ prepare_private_node_runtime() {
 	create_directory 0755 "$STAGE_ROOT/runtime"
 	if is_test_mode; then
 		create_directory 0755 "$STAGE_ROOT/runtime/bin"
-		printf '#!/usr/bin/env sh\nprintf "v22.18.0\\n"\n' > "$STAGE_ROOT/runtime/bin/node"
+		printf '#!/usr/bin/env sh\nprintf "v22.23.4\\n"\n' > "$STAGE_ROOT/runtime/bin/node"
 		chmod 0755 -- "$STAGE_ROOT/runtime/bin/node"
 		NODE_ARCHIVE_SHA256='test-mode-no-archive'
 		return
@@ -494,11 +496,13 @@ prepare_private_node_runtime() {
 	download_dependency node "$archive" || fail 'Node dependency download failed before activation.'
 	download_dependency node-checksums "$checksums" || fail 'Node checksum-index download failed before activation.'
 	verify_node_checksum "$archive" "$checksums" || fail 'Node.js checksum verification failed; the archive was not extracted.'
+	verify_pinned_checksum "$archive" "$NODE_LINUX_AMD64_SHA256" || fail 'Node.js pinned checksum verification failed; the archive was not extracted.'
 	NODE_ARCHIVE_SHA256="$(sha256sum "$archive" | cut -d ' ' -f 1)"
 	tar -xJf "$archive" -C "$download_dir"
 	extracted="$download_dir/node-${NODE_VERSION}-linux-x64"
 	[[ -x "$extracted/bin/node" ]] || fail 'The verified Node.js archive did not contain an executable runtime.'
 	cp -a -- "$extracted/." "$STAGE_ROOT/runtime/"
+	[[ "$("$STAGE_ROOT/runtime/bin/node" -v)" == "$NODE_VERSION" ]] || fail 'The verified private Node runtime version differs from the pinned release.'
 	rm -rf -- "$download_dir"
 }
 

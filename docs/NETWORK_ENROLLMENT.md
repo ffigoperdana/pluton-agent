@@ -1,5 +1,10 @@
 # HTTPS connectivity, enrollment diagnostics and partial recovery
 
+The dated 22.18.0 results below remain historical. The current runtime pin and
+new networking regressions are recorded in the
+[Node 22.23.4 security patch](NODE_RUNTIME_SECURITY.md); the 15-second DNS and
+30-second shared request limits are unchanged.
+
 This independently developed change starts from reviewed standalone main
 `095088beeb3a10dc5fdda4f55db07fa4d17240be`. It preserves Agent capability/wire
 version **0.7.0**, HTTPS verification, enrollment/HMAC payloads, Source Access,
@@ -96,7 +101,7 @@ no network, token, identity or filesystem writes. It does not acquire/download a
 runtime. A clean machine without a trusted Node runtime cannot gain an actual
 Node network test while also remaining strictly read-only.
 
-For an approved private Node 22.18.0 and a build of this reviewed source, run:
+For the approved private Node 22.23.4 and a build of this reviewed source, run:
 
 ```sh
 /opt/pluton-agent/runtime/bin/node agent/dist/index.js network-check \

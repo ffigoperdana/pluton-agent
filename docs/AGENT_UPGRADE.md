@@ -14,7 +14,10 @@ activation; do not add it manually. Monorepo-installed Agents need the separate
 reviewed migration described in [the extraction audit](EXTRACTION_AUDIT.md).
 These scripts use this repository's own Git history; see [release pinning](RELEASES.md).
 
-`installers/upgrade-agent.sh` replaces **Agent application artifacts only**. It
+`installers/upgrade-agent.sh` replaces Agent application artifacts and, for the
+explicitly supported standalone Node 22.18.0 baseline, its private runtime with
+**Node 22.23.4**. See the [runtime security patch](NODE_RUNTIME_SECURITY.md).
+Already patched installations use the existing application-only transaction. It
 does not install/enroll a new Agent, regenerate configuration, change root grants,
 install global Node/npm/pnpm, update Restic/Rclone, migrate the server or alter
 other services. Agent 0.6.1 adds the local upgrade-hold protocol used by future
@@ -118,7 +121,7 @@ for regression scope, local Linux results and deployment boundaries.
   Build/cache/temp files stay inside this upgrade's private backup directory.
   No global package manager or system Node is required or changed. Network access
   to the normal package registry may be needed; offline build is not guaranteed.
-- At least **2 GiB plus two installed-app sizes free** is required on both `/opt`
+- At least **2 GiB plus twice the installed app and runtime size free** is required on both `/opt`
   staging and `/var/lib` backup filesystems. Larger dependencies may require more.
   Any build/space error occurs before the service is stopped. Backups accumulate;
   pruning them is a separate exact-ownership operator task.
@@ -133,7 +136,9 @@ for regression scope, local Linux results and deployment boundaries.
 The script creates a root-owned 0700 `/opt/pluton-agent/.upgrade-lock` and a unique
 0700 `/var/lib/pluton-agent-upgrades/<UTC>-<commit-prefix>-<random>/` directory.
 The latter retains source/build artifacts, a durable receipt, previous app,
-configuration/unit backups (0600) and previous `.verified-install`. These are
+configuration/unit backups (0600) and previous `.verified-install`. Runtime
+changes also retain the verified previous runtime and a version-2 transaction
+receipt; application-only receipts retain version 1. These are
 private operator files and must never enter Git, support tickets or public logs.
 No historical identity, secret or Source Access state is copied back by rollback.
 
@@ -151,8 +156,12 @@ old app is backed up and fsynced. The new app is copied onto the installation
 filesystem, checked as the service account, then published with **two individually
 atomic renames while stopped**. A durable journal covers the gap; this is not a
 single atomic directory exchange and is not claimed power-loss acceptance.
-Only application provenance is updated. Runtime, private tools, configuration,
-unit, identity, policy and command receipts are not replaced.
+For the supported runtime patch, the verified candidate runtime is also published
+with two journaled renames while stopped. A root-private, hash-verified copy of
+the previous Node executable anchors recovery through a missing-runtime gap.
+Full-tree/source provenance and the Node version/archive pin are updated after
+publication. Restic/rclone, configuration, unit, identity, policy and command
+receipts are not replaced. This is not one atomic app/runtime exchange.
 
 Only `pluton-agent.service` is started/restarted. During the hold, an explicit
 unprivileged `check` sends an authenticated TLS heartbeat **without polling**;
@@ -165,7 +174,7 @@ use a separately approved pilot before resuming production plans.
 ## Failure, interruption and rollback
 
 Ordinary failures before publication retain the old app. Post-publication failures
-attempt to restore only the known previous app and its provenance while still
+attempt to restore the known previous app, runtime (when changed) and provenance while still
 drained; the original active/inactive state is respected. Unknown artifacts,
 changed identity/policy/receipts, failed durability or a live owner leave the hold
 closed and retain evidence for review. No `rm -rf` of installation/state is used.
@@ -183,8 +192,10 @@ Rollback validates the receipt, Agent binding, preserved-state hashes, previous
 artifact hash and exact owned fences. If interrupted before replacement, it
 aborts that transaction without changing the app. It never restores stale
 identity/configuration/policy from the backups. An interrupted rename can be
-recovered even if `app` is temporarily absent, using the transaction's protected
-private-Node digest. Failed/candidate/previous artifacts remain for investigation.
+recovered even if `app` or `runtime` is temporarily absent, using the transaction's
+protected private-Node digest and executable anchor. Use the reviewed patched
+checkout for a version-2 receipt; older application-only rollback code cannot
+recover this transaction. Failed/candidate/previous artifacts remain for investigation.
 
 Rollback **refuses after identity receipts, selected roots, credentials, host
 policy or configuration have evolved**. A downgrade then needs a separate review
@@ -358,8 +369,8 @@ Corepack builds, physical crash and production upgrade/rollback have **not** bee
 executed. Hosted Linux CI and a separately authorized disposable-systemd pilot
 are required before production use. No existing Agent was accessed by this task.
 
-The focused `Agent upgrade safety` workflow is prepared to run these transaction
-and complete Agent tests on hosted Ubuntu with Node 22.18.0 after manual branch
+The `Standalone Linux Agent` workflow is prepared to run these transaction
+and complete Agent tests on hosted Ubuntu with Node 22.23.4 after manual branch
 publication. It has read-only repository permissions, no secrets, privileged
 service actions, publishing or deployment steps. It has **not run** locally or
 remotely as part of this task.

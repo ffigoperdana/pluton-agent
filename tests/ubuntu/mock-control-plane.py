@@ -12,6 +12,7 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--native-vm', action='store_true', help='Idle synthetic poll responses; disposable booted VM only')
+parser.add_argument('--existing-identity', action='store_true', help='Reuse only the disposable fixture identity; refuse enrollment')
 args = parser.parse_args()
 if args.native_vm:
     assert Path('/opt/pluton-disposable-native-vm').is_file(), 'Disposable native VM sentinel required'
@@ -19,7 +20,10 @@ if args.native_vm:
 private = Path('/var/lib/pluton-synthetic-control-plane' if args.native_vm else '/tmp/pluton-install-private')
 assert private.is_dir() and private.stat().st_mode & 0o077 == 0, 'Private synthetic fixture directory required'
 secret_file = private / 'server-secret'
-if args.native_vm and secret_file.exists():
+if args.existing_identity:
+    assert not args.native_vm and Path('/opt/pluton-disposable-ubuntu-test').is_file()
+    secret = json.loads(Path('/var/lib/pluton-agent/identity.json').read_text())['secret']
+elif args.native_vm and secret_file.exists():
     secret = secret_file.read_text()
 else:
     secret = secrets.token_hex(32)
@@ -28,7 +32,7 @@ else:
         secret_file.chmod(0o600)
 token = private.joinpath('token').read_text().strip()
 proof = {'enrollments': 0, 'heartbeats': 0, 'polls': 0}
-if args.native_vm and private.joinpath('proof.json').exists():
+if (args.native_vm or args.existing_identity) and private.joinpath('proof.json').exists():
     proof = json.loads(private.joinpath('proof.json').read_text())
 nonces = set()
 
@@ -41,6 +45,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             body = json.loads(raw)
             if self.path == '/api/agent/enroll':
+                if args.existing_identity:
+                    private.joinpath('unexpected-reenrollment').touch()
+                    raise AssertionError('No enrollment during runtime upgrade')
                 assert hmac.compare_digest(body['token'], token)
                 assert proof['enrollments'] == 0
                 assert body['inventory']['agentVersion'] == '0.7.0'

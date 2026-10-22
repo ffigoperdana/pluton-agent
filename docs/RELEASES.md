@@ -7,7 +7,7 @@ registry/deploy step. No long-lived GitHub token is needed by a public source ho
 
 ## Build and inspect
 
-Use a clean committed Linux checkout with approved private Node 22.18.0 and frozen
+Use a clean committed Linux checkout with approved private Node 22.23.4 and frozen
 pnpm 10.20.0 dependencies. Run typecheck, Agent tests, contracts, installer safety
 and isolated Ubuntu validation first.
 
@@ -51,12 +51,16 @@ no unreviewed bundled executable or npm install script is activated from an arch
 
 The source archive supports a **fresh** build/install without monorepo or Git
 history. The app archive is not an alternate updater and must never be copied over
-an installed app to evade transaction/health checks. The current app-only upgrader
+an installed app to evade transaction/health checks. The current standalone upgrader
 requires a clean **Git checkout** of this Agent repository to archive the reviewed
 commit. Upgrade from release archives alone is not yet implemented; document that
 limit rather than weakening committed-source checks. Installed provenance retains
 format=1 content/source fingerprints and a standalone distribution marker; release
 manifests bind those source deliveries to the new repository's own commit.
+
+The [Node 22.23.4 security patch](NODE_RUNTIME_SECURITY.md) describes private
+runtime upgrade, state preservation, rollback and the Server commit-pin/wizard
+update required before distributing new installation commands.
 
 ## Host pinning and future private organization
 
