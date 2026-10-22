@@ -3,7 +3,7 @@
 set -euo pipefail
 [[ -f /opt/pluton-disposable-ubuntu-test && ${PLUTON_DISPOSABLE_INSTALL_TEST:-} == 1 ]] || exit 90
 case "${1:-}" in
-  --version) printf 'systemd 249 (container test adapter)\n' ;;
+  --version) /usr/bin/systemctl --version; printf 'Container test adapter: lifecycle is simulated\n' ;;
   is-active) [[ -f /tmp/pluton-fixture-service-active ]] ;;
   daemon-reload|enable|disable) : ;;
   restart|start) touch /tmp/pluton-fixture-service-active ;;
