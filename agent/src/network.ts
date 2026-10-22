@@ -3,6 +3,10 @@ import net from "node:net";
 import tls from "node:tls";
 import type { AgentConfig } from "./types.js";
 
+// DNS is part of the total request budget, not an additional allowance.
+export const DNS_TIMEOUT_MS = 15_000;
+export const REQUEST_TIMEOUT_MS = 30_000;
+
 export type NetworkFailure =
   | "DNS_FAILURE" | "DNS_TIMEOUT" | "CONNECT_TIMEOUT" | "CONNECT_FAILURE"
   | "TLS_VERIFICATION_FAILED" | "CONNECTION_INTERRUPTED" | "REQUEST_TIMEOUT"
@@ -66,7 +70,7 @@ export async function connectServer(
       if (error) reject(error); else resolve(result!);
     };
     const abort = () => finish(signal.reason);
-    const timer = setTimeout(() => finish(new AgentNetworkError("DNS_TIMEOUT")), options.dnsTimeoutMs ?? 3000);
+    const timer = setTimeout(() => finish(new AgentNetworkError("DNS_TIMEOUT")), options.dnsTimeoutMs ?? DNS_TIMEOUT_MS);
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) { abort(); return; }
     if (family) { finish(null, [{ address: hostname, family }]); return; }

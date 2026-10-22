@@ -60,6 +60,8 @@ diagnostics and enrollment failure categories, see
 [network and enrollment troubleshooting](docs/NETWORK_ENROLLMENT.md).
 `--check` remains local-only. The new `network-check` CLI sends unauthenticated
 health GETs without reading a token or identity; HTTPS verification stays enabled.
+DNS has a 15-second deadline within each request's 30-second total budget. The
+three sequential `network-check` probes can take about 90 seconds.
 
 `install-agent.sh` is **fresh-install only**. An existing installation, config or
 identity is refused; it must not silently adopt a monorepo Agent. For an already

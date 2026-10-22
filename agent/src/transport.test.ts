@@ -3,6 +3,7 @@ import test, { before, after } from "node:test";
 import https from "node:https";
 import net from "node:net";
 import dns from "node:dns";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -115,6 +116,79 @@ test("connection/TLS handshake and entire request deadlines are independent and 
   } finally { for (const socket of held) socket.destroy(); await new Promise<void>((resolve) => stalled.close(() => resolve())); await f.close(); }
 });
 
+test("default budgets tolerate DNS slower than the former DNS and request deadlines before IPv6/IPv4 fallback", async () => {
+  const f = await fixture();
+  const delayed = ((_host: string, _options: unknown, callback: (error: null, result: dns.LookupAddress[]) => void) =>
+    { setTimeout(() => callback(null, [v6, v4]), 10_100); }) as typeof dns.lookup;
+  try {
+    await new AgentTransport(f.config, undefined, undefined, { lookup: delayed })
+      .post("/api/agent/enroll", '{"token":"synthetic-slow-dns"}');
+    assert.equal(f.count(), 1);
+  } finally { await f.close(); }
+});
+
+test("default DNS deadline is 15 seconds and a late resolver callback cannot dispatch enrollment", { timeout: 5000 }, async (t) => {
+  const f = await fixture();
+  let complete!: (error: Error | null, result: dns.LookupAddress[]) => void;
+  const delayed = ((_host: string, _options: unknown, callback: typeof complete) => { complete = callback; }) as typeof dns.lookup;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let settled = false;
+    const result = assert.rejects(atAgentStage("enroll", () =>
+      new AgentTransport(f.config, undefined, undefined, { lookup: delayed })
+        .post("/api/agent/enroll", '{"token":"synthetic-private-timeout-token"}')),
+    (error: unknown) => {
+      assert.equal(formatAgentFailure(error), "enroll failed: DNS resolution timed out.");
+      settled = true; return true;
+    });
+    t.mock.timers.tick(14_999);
+    await nextTurn();
+    assert.equal(settled, false);
+    t.mock.timers.tick(1);
+    await result;
+    complete(null, [v4]);
+    await Promise.resolve();
+    t.mock.timers.tick(30_000);
+    assert.equal(f.count(), 0);
+  } finally { t.mock.timers.reset(); await f.close(); }
+});
+
+test("default 30 second deadline includes DNS and an incomplete enrollment response without replay or token output", { timeout: 5000 }, async (t) => {
+  const f = await fixture();
+  let count = 0;
+  let received!: () => void;
+  const dispatched = new Promise<void>((resolve) => { received = resolve; });
+  f.server.removeAllListeners("request");
+  f.server.on("request", (request, response) => {
+    count++; request.resume(); response.writeHead(200); response.write('{"private":"synthetic-response-secret');
+    received();
+  });
+  const delayed = ((_host: string, _options: unknown, callback: (error: null, result: dns.LookupAddress[]) => void) =>
+    { setTimeout(() => callback(null, [v4]), 12_000); }) as typeof dns.lookup;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let settled = false;
+    const result = assert.rejects(atAgentStage("enroll", () =>
+      new AgentTransport(f.config, undefined, undefined, { lookup: delayed })
+        .post("/api/agent/enroll", '{"token":"synthetic-private-timeout-token"}')),
+    (error: unknown) => {
+      assert.equal(formatAgentFailure(error), "enroll failed: request timed out.");
+      settled = true; return true;
+    });
+    t.mock.timers.tick(12_000);
+    await Promise.resolve(); // DNS continuation schedules the first connection.
+    t.mock.timers.tick(0);
+    await Promise.race([dispatched, result.then(() => assert.fail("request expired before dispatch"))]);
+    t.mock.timers.tick(17_999);
+    await nextTurn();
+    assert.equal(settled, false);
+    t.mock.timers.tick(1);
+    await result;
+    t.mock.timers.tick(60_000);
+    assert.equal(count, 1);
+  } finally { t.mock.timers.reset(); await f.close(); }
+});
+
 test("certificate trust and original hostname verification fail closed before POST", async () => {
   const f = await fixture();
   try {
@@ -173,8 +247,15 @@ test("application enrollment rejection and invalid envelopes never surface arbit
   }
 });
 
-test("explicit network preflight sends only unauthenticated health GETs and never reads private state", async () => {
+test("explicit network preflight tolerates slow DNS, reports shared budgets and sends only health GETs without private state", async (t) => {
+  const output = t.mock.method(console, "log", () => {});
   const f = await fixture("::");
+  let lookups = 0;
+  t.mock.method(dns, "lookup", ((_host: string, _options: unknown,
+    callback: (error: null, result: dns.LookupAddress[]) => void) => {
+    if (++lookups === 1) setTimeout(() => callback(null, [v6, v4]), 10_100);
+    else queueMicrotask(() => callback(null, [v6, v4]));
+  }) as typeof dns.lookup);
   const requests: string[] = [];
   f.server.removeAllListeners("request");
   f.server.on("request", (request, response) => {
@@ -186,6 +267,11 @@ test("explicit network preflight sends only unauthenticated health GETs and neve
   try {
     assert.equal(await networkPreflight({ ...f.config, dataDir: "/unreadable/nonexistent/private-state" }), true);
     assert.equal(requests.length, 3);
+    assert.equal(lookups, 3);
+    assert.equal(output.mock.calls[0].arguments[0], "network-check: DNS deadline 15s within 30s total per probe; three sequential probes may take 90s.");
+    for (const family of ["dual-stack", "IPv4", "IPv6"]) {
+      assert.ok(output.mock.calls.some((call) => call.arguments[0] === `network-check ${family}: PASS DNS/TCP/verified TLS/HTTP JSON health`));
+    }
     assert.equal(await networkPreflight({ ...f.config, serverUrl: new URL("http://localhost"), allowInsecureHttp: true }), false);
     assert.equal(requests.length, 3);
   } finally { await f.close(); }
