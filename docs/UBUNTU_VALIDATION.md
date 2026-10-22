@@ -153,7 +153,7 @@ and inside disposable images, not committed as evidence or runtime state.
 | Synthetic CA enrollment, authenticated heartbeat/version/capability | PASS | PASS |
 | Actual wrong CA / wrong hostname refusal | PASS | PASS |
 | Agent tests: commands, Source Access, exclusions, synthetic DB/hooks, receipts/failures, real local Restic | 157 PASS, 0 FAIL, 0 SKIP | 157 PASS, 0 FAIL, 0 SKIP |
-| Versioned golden contracts, source parity, docs/release negatives | 6 PASS, 0 FAIL, 0 SKIP | 6 PASS, 0 FAIL, 0 SKIP |
+| Versioned golden contracts, source parity, docs/release negatives | 6 PASS, 0 FAIL, 0 SKIP; see SIGPIPE follow-up below | 6 PASS, 0 FAIL, 0 SKIP; see SIGPIPE follow-up below |
 | Installer safety shell harness including OS/cgroup/dangling-path/preflight negatives | PASS | PASS |
 | Early fresh failure staging cleanup / late enrollment failure residual guards | PASS | PASS |
 | Upgrade/rollback/provenance/durability/locale tests | 62 PASS, 0 FAIL, 0 SKIP | 62 PASS, 0 FAIL, 0 SKIP |
@@ -179,8 +179,34 @@ version bump: installer/fixture/documentation changes preserve protocol 0.7.0.
 The Windows host's global Node is 24.16.0; it was not used for validation. Initial
 sandbox access to Docker/WSL was restricted; approved local Docker access enabled
 the isolated runs. All builds/tests used private Node 22.18.0 and pnpm 10.20.0.
-Hosted CI, native VM/exact Server ISO boot, current production server pairing,
+Hosted CI for the corrected commit, native VM/exact Server ISO boot, current production server pairing,
 real DB/SFTP recovery and production activation remain **NOT EXECUTED**.
+
+## Hosted CI SIGPIPE follow-up
+
+User-provided hosted CI logs for the original candidate show exit **141** on
+both Ubuntu versions immediately after the glibc version line. The failure was
+in diagnostic `ldd --version | head -n 1`, before Python, provisioning or
+enrollment. With `pipefail`, an early reader exit can deliver SIGPIPE to the
+writer; whether a short output triggers it depends on scheduling. Earlier local
+PASS results were real but did not expose this intermittent fixture defect.
+
+Both the glibc diagnostic and the equivalent rclone version check now use
+`sed -n '1p'`, which prints the first line while consuming the remaining input.
+`pipefail` stays enabled, and no producer error is ignored. The new Linux
+regression test runs the actual two diagnostic pipelines with a delayed producer
+that writes more than a pipe buffer, then verifies that a real producer exit 42
+still fails the pipeline. An isolated no-network reproduction confirmed that
+the original `head` pipeline fails with 141 and the corrected pipelines pass.
+
+The corrected local matrix passed on both Ubuntu 22.04 and 24.04: 157 Agent
+tests, 7 contract/docs/release/fixture tests and 62 upgrade/provenance tests per
+OS, with zero failures or skips. Both installer safety harnesses, Bash syntax,
+locale checks, standalone validation and repeated reproducible packaging/checksum
+verification passed. Logs remain ignored under `tmp/validation/sigpipe-*.log`.
+Hosted CI for the fix still requires the corrected commit to be pushed and tested through
+the user's normal review flow. No push or production action is performed here;
+native systemd acceptance remains pending.
 
 ## Changed files
 
@@ -193,6 +219,8 @@ real DB/SFTP recovery and production activation remain **NOT EXECUTED**.
   dynamically allocated test UID and explicit standalone boundary validation.
 - `tests/ubuntu/fresh-install.sh`: actual OS/tool reports, unprivileged preflight,
   unit parsing, ownership/account/ACL checks and TLS rejection cases.
+- `scripts/tests/ubuntu-fixture.test.mjs`: deterministic version-diagnostic
+  SIGPIPE regression and propagation of genuine producer failures.
 - `tests/ubuntu/systemctl-fixture.sh`: accurate installed version and adapter label.
 - `tests/ubuntu/mock-control-plane.py`: opt-in native disposable-VM idle fixture
   with synthetic identity/proof persisted across reboot; default no-poll behavior retained.

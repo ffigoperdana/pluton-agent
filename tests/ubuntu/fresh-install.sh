@@ -8,7 +8,8 @@ if command -v node >/dev/null 2>&1; then printf 'Fresh host fixture unexpectedly
 [[ "$ID" == ubuntu && "$VERSION_ID" == "$UBUNTU_VERSION" && "$(uname -m)" == x86_64 ]]
 printf 'VALIDATION OS: %s; kernel shared with Docker, not a native Ubuntu boot\n' "$PRETTY_NAME"
 /usr/bin/systemctl --version
-ldd --version | head -n 1
+# Drain the producer: head can close early and make pipefail report SIGPIPE (141).
+ldd --version | sed -n '1p'
 python3 --version
 mkdir -p /tmp/pluton-install-private /opt/test-trust /srv/example-app /run/systemd/system
 chmod 0700 /tmp/pluton-install-private
@@ -34,7 +35,7 @@ bash install-agent.sh --server https://localhost:18443 --allowed-root /srv/examp
 node=/opt/pluton-agent/runtime/bin/node
 [[ "$($node -v)" == v22.18.0 ]]
 /opt/pluton-agent/bin/restic version | grep -F '0.19.1'
-/opt/pluton-agent/bin/rclone version | head -n 1 | grep -F '1.75.1'
+/opt/pluton-agent/bin/rclone version | sed -n '1p' | grep -F '1.75.1'
 grep -Fx 'distribution=pluton-agent-standalone-v1' /opt/pluton-agent/.verified-install >/dev/null
 grep -Fx 'User=pluton-agent' /etc/systemd/system/pluton-agent.service >/dev/null
 /usr/bin/systemd-analyze verify /etc/systemd/system/pluton-agent.service
