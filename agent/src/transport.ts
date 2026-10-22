@@ -2,7 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import type tls from "node:tls";
 import { readFileSync } from "node:fs";
-import { AgentNetworkError, classifyNetworkError, connectServer, serverHostname, type NetworkOptions } from "./network.js";
+import { AgentNetworkError, classifyNetworkError, connectServer, serverHostname, REQUEST_TIMEOUT_MS, type NetworkOptions } from "./network.js";
 import type { AgentConfig } from "./types.js";
 
 export class AgentHttpError extends Error {
@@ -21,7 +21,7 @@ export class AgentTransport {
 
   constructor(
     private readonly config: AgentConfig,
-    private readonly timeoutMs = 10_000,
+    private readonly timeoutMs = REQUEST_TIMEOUT_MS,
     private readonly maxResponseBytes = 2 * 1024 * 1024,
     private readonly network: NetworkOptions = {},
   ) {

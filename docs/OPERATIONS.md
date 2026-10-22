@@ -49,6 +49,10 @@ If curl works but the private Node Agent fails, use the new source's explicit
 DNS family order or an HTTP 400 probe alone does not prove broken IPv6 or an
 invalid enrollment token. The transport selects one verified connection before
 credentials are sent and never retries an ambiguous enrollment HTTP request.
+DNS may take up to 15 seconds within the shared 30-second total request deadline;
+the three sequential `network-check` probes can take about 90 seconds. Candidate
+TCP/TLS deadlines remain 5 seconds with a 250 ms IPv4/IPv6 stagger. Native resolver
+work may finish later; a late result cannot send an enrollment request.
 Keep `install-agent.sh --check` as the local-only no-network prerequisite check.
 
 The compatible server administrator creates an enrollment token in **Sources →

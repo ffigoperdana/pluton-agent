@@ -38,12 +38,20 @@ candidates. A new TCP/verified TLS connection starts every 250 ms while earlier
 viable attempts remain alive. It uses supported `net.createConnection` and
 `tls.connect`; it does not set process-wide DNS/network defaults or force IPv4.
 
-DNS has a 3-second promise deadline; each candidate's TCP/TLS handshake has a
-5-second deadline; the full DNS/connect/HTTP response operation has a 10-second
-deadline. Outstanding sockets/timers are destroyed on success or failure. Native
+DNS has a 15-second promise deadline; each candidate's TCP/TLS handshake has a
+5-second deadline; the full DNS/connect/HTTP response operation has a 30-second
+deadline. DNS consumes that total budget: it does not add another 15 seconds or
+restart the deadline when HTTP begins. The 250 ms family stagger is unchanged.
+This tolerates slow but successful lookups while bounding a stuck request; failure
+can now take longer to report than with the former 3-second DNS/10-second total
+limits. Outstanding sockets/timers are destroyed on success or failure. Native
 `getaddrinfo` work cannot be cancelled by Node's lookup API; a late resolver
 callback is ignored after the request promise times out. The system resolver
 itself must still be healthy; these deadlines are not an OS resolver repair.
+
+The standalone upgrader retains its separate bounded health-process deadline.
+Process startup and inventory work consume that outer allowance; increasing the
+transport budget does not extend it or relax upgrade health/rollback admission.
 
 Only one verified winning socket is handed to a private single-use HTTP Agent.
 HTTP headers, enrollment tokens and signed bodies are sent **once**, after
@@ -99,8 +107,9 @@ Add `--ca-file /absolute/approved-ca.pem` where required. Use the **new source's
 compiled CLI or a verified installation containing this change; an old installed
 CLI does not implement `network-check`. No credentials or identity arguments are
 accepted. The command sends three unauthenticated `GET /api/health` probes:
-automatic dual-family, IPv4-only, IPv6-only. Each has a 10-second total budget;
-the sequence can take up to about 30 seconds, excluding delayed OS resolver work.
+automatic dual-family, IPv4-only, IPv6-only. The command reports the shared
+15-second DNS deadline within a 30-second total budget per probe; the sequence can
+take up to about 90 seconds, excluding delayed OS resolver work and scheduling.
 It never enrolls, loads an Agent identity, sends a heartbeat or polls commands.
 Configured mTLS material, if explicitly supplied through the approved Agent
 environment, is still used for the TLS handshake.
@@ -202,7 +211,7 @@ reuse an immutable release tag/asset for different bytes.
 
 ## Validation
 
-Local execution on **2026-10-22**, using private Node **22.18.0**, pnpm
+Initial dual-stack validation on **2026-10-22**, using private Node **22.18.0**, pnpm
 **10.20.0**, the unchanged frozen minimal lock and isolated synthetic servers:
 
 | Check | Ubuntu 22.04 x86_64 | Ubuntu 24.04 x86_64 |
@@ -251,6 +260,43 @@ that fixture. This is not native service-manager acceptance. Native booted VM,
 production routing/proxy cause, current deployed Server pairing and real DB/SFTP
 recovery remain **PENDING / NOT TESTED**. No push, deployment or production action
 is performed here.
+
+## Slow DNS budget evaluation
+
+The 15-second DNS / 30-second total defaults improve tolerance for slow successful
+resolution. They do not establish the cause of a production connectivity failure.
+Regression coverage uses a synthetic resolver and private loopback HTTPS:
+
+- A real 10.1-second delayed lookup crosses both former limits and still completes
+  one verified enrollment POST after falling back from unreachable IPv6 to IPv4.
+- A controlled clock keeps unresolved DNS pending at 14,999 ms and rejects at
+  15,000 ms. A late successful callback cannot dispatch enrollment.
+- With 12 seconds spent resolving, an incomplete enrollment response remains
+  pending at total 29,999 ms and expires at 30,000 ms, rather than receiving a
+  fresh HTTP allowance. The server sees one POST; operator output contains only
+  the fixed timeout category, without the synthetic token or partial response.
+- Mutating each default back to its former 3-second DNS or 10-second total value
+  causes its corresponding regression to fail. These mutations run only inside
+  disposable containers and are never part of delivered source.
+- Existing two-way IPv4/IPv6 fallback, stalled TLS candidates, CA/hostname
+  rejection, HTTP/body redaction, enrollment state and no-replay tests remain.
+
+`network-check` uses the same transport defaults and reports the per-probe and
+three-probe budgets. Its regression also delays the automatic probe's resolver
+by 10.1 seconds and requires all three probes to succeed with only unauthenticated
+health GETs, no identity access, and HTTPS verification. Agent 0.7.0 protocol vectors,
+dependency pins, installation admission and source verification are unchanged.
+
+Slow-DNS follow-up validation on **2026-10-22**, with Node **22.18.0** and pnpm
+**10.20.0**, passed on both Ubuntu **22.04** and **24.04** synthetic x86_64 userlands:
+**175 Agent tests, 8 contract tests and 62 upgrade tests per OS, zero failures or
+skips**. Fresh installation, installer safety, protected recovery, frozen build,
+source-delta verification and twice-generated release checksums also passed.
+The strengthened final DNS/diagnostic tests, all Agent/contracts and packaging
+were checked again in matching cached disposable userlands. Isolated SYN-delay
+acceptance passed for both IPv4 and IPv6 on each OS with the final runtime source.
+No archives were published. Systemd calls used the explicit fixture adapter;
+native booted VM, production DNS/routing and real Server pairing remain untested.
 
 ## Changed files
 

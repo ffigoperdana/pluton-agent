@@ -43,26 +43,26 @@
     {
       "file": "agent/src/network.ts",
       "extractedSha256": null,
-      "sha256": "c0ad32a9d0b2bf026d26185d85442a38d9445bb3fb4b4147bf7be9a8a7e6aff3",
-      "reason": "Resolve and interleave bounded IPv4/IPv6 candidates, retaining pending verified TLS attempts before any HTTP credentials are sent."
+      "sha256": "9cfaa3075879c2af80a14a22d81fd6e5e31c8e69bd3b6b4b61e0f5f733fa51a3",
+      "reason": "Resolve and interleave bounded IPv4/IPv6 candidates with a 15-second DNS deadline, retaining pending verified TLS attempts before HTTP dispatch."
     },
     {
       "file": "agent/src/networkPreflight.ts",
       "extractedSha256": null,
-      "sha256": "945b8adb5aa7e8af31934437f320979fbc0c7d13817451403259e8fbdf949121",
-      "reason": "Probe automatic/IPv4/IPv6 verified HTTPS health GETs without loading identity or sending enrollment credentials."
+      "sha256": "4ebf334152e5fb68847d619b5e9039f50001caaa8d7f7261a6263ae72f3f906e",
+      "reason": "Probe automatic/IPv4/IPv6 verified HTTPS health GETs without private state; report shared 15-second DNS and 30-second total budgets."
     },
     {
       "file": "agent/src/transport.test.ts",
       "extractedSha256": null,
-      "sha256": "07b14dcb1747af83faaeba4fe25049fa1f81a1744e83d7c6a8e745d44f8e6a03",
-      "reason": "Exercise verified dual-stack fallback, DNS/connect/request budgets, TLS rejection, response safety, one-send enrollment and read-only diagnostics."
+      "sha256": "853c3d4d9a542e943ad3f98276489ac810a5f1000567a2cf0e06f148114b2125",
+      "reason": "Exercise slow DNS across former deadlines, exact 15/30-second bounds, shared elapsed budgets, no replay or token output, verified dual-stack fallback and read-only diagnostics."
     },
     {
       "file": "agent/src/transport.ts",
       "extractedSha256": "176017fee31bfd0138e743f1957e54a7011a34a7040ddbae59b9174ba32d1ebc",
-      "sha256": "c2ec7d8c49dba0fb99bc6edd1df3761b4cf335195bb0c3064e73ff701de6209e",
-      "reason": "Select one verified connection before HTTP dispatch, enforce total response budgets/origin boundaries and avoid automatic request replay."
+      "sha256": "15ce3670fd88dac363ca65262d1171de54047a95565abd02904e8e25ac776b55",
+      "reason": "Select one verified connection before HTTP dispatch, enforce a 30-second total DNS/connect/response budget and origin boundaries without automatic request replay."
     }
   ]
 }
