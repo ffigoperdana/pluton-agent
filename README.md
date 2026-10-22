@@ -1,8 +1,11 @@
 # Pluton Linux Managed Agent
 
 Standalone, outbound-only Linux Managed Agent for the open-source Pluton community
-fork. Agent capability version **0.7.0**; initial target **Ubuntu Server 22.04 LTS,
-x86_64, systemd and cgroup v2**. Apache-2.0 attribution is preserved in LICENSE and
+fork. Agent capability version **0.7.0**; target **Ubuntu Server 22.04 LTS,
+x86_64, systemd and cgroup v2**. Ubuntu **24.04 LTS** passes disposable userland
+validation; full native support awaits booted-VM acceptance.
+See the [Ubuntu audit and test results](docs/UBUNTU_VALIDATION.md).
+Apache-2.0 attribution is preserved in LICENSE and
 NOTICE. This is an independently maintained extraction, not an upstream endorsement.
 
 The repository contains no Pluton Server, frontend, database, Docker deployment or
@@ -37,6 +40,8 @@ cd pluton-agent
 AGENT_SOURCE_SHA='REPLACE_WITH_REVIEWED_40_HEX_SHA'
 printf '%s\n' "$AGENT_SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'
 git checkout --detach "$AGENT_SOURCE_SHA"
+bash install-agent.sh --check --server https://pluton.example.internal \
+  --allowed-root /srv/example-app
 sudo bash install-agent.sh --server https://pluton.example.internal \
   --allowed-root /srv/example-app
 systemctl is-active pluton-agent
@@ -74,8 +79,11 @@ fixture provisions private pinned tools and synthetic DB/hook programs inside a
 disposable container; it has no host mounts and never contacts real storage:
 
 ```sh
-docker build --progress=plain -f tests/ubuntu/Dockerfile \
-  -t pluton-agent-validation:local .
+for version in 22.04 24.04; do
+  docker build --platform linux/amd64 --progress=plain -f tests/ubuntu/Dockerfile \
+    --build-arg UBUNTU_VERSION="$version" \
+    -t "pluton-agent-validation:ubuntu-$version" . || exit
+done
 ```
 
 It exercises real source installation/build, TLS/HMAC enrollment against a local
@@ -83,6 +91,8 @@ synthetic API, the original Agent tests, upgrade rollback models, all three loca
 and reproducible release packaging. **Systemd calls are explicitly adapted** in
 the container; this is not proof of real systemd startup, cgroup admission, a
 production server pairing, or a real database/SFTP/HCP recovery.
+Use the [native systemd VM acceptance procedure](docs/NATIVE_SYSTEMD_ACCEPTANCE.md)
+before claiming native Ubuntu 24.04 support or point-release certification.
 
 GitHub CI validates only; it has read-only repository permissions and contains no
 publishing, deployment, tag or release job. Publish/review this branch manually.

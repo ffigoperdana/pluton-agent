@@ -1,5 +1,10 @@
 # Standalone Linux Agent extraction audit
 
+Subsequent Ubuntu 24.04 validation is recorded in the versioned
+[Ubuntu compatibility audit](UBUNTU_VALIDATION.md), with a separate
+[native VM gate](NATIVE_SYSTEMD_ACCEPTANCE.md). Historical extraction evidence
+below remains scoped to its original run; it is not proof of native 24.04 support.
+
 ## Scope and authority
 
 Source: the merged Pluton main commit recorded in `contracts/extraction-source.json`.

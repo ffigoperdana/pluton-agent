@@ -3,6 +3,9 @@
 ## Preconditions and trust
 
 Use a new Ubuntu 22.04 x86_64 source host with systemd as its active service manager.
+Ubuntu 24.04 x86_64 is a validation candidate using the same clean-install steps;
+native VM acceptance is pending. Review [OS results](UBUNTU_VALIDATION.md) and the
+[native acceptance gate](NATIVE_SYSTEMD_ACCEPTANCE.md) before onboarding.
 The app-only upgrader also requires unified cgroup v2 and the standard installer
 paths. Reserve measured disk for private Node/Corepack, source compilation, app,
 backups and job workspaces. Existing upgrader minimum admission is 2 GiB plus two
@@ -13,6 +16,24 @@ Required utilities include Bash, Git, curl, CA certificates, xz/tar, bzip2, unzi
 coreutils/findutils, runuser, passwd/account tools and systemctl. Verify these with
 the infrastructure owner rather than replacing system Node. The installer checks
 the OS, architecture and utilities before provisioning.
+
+For a clean disposable host of either target release, provision prerequisites:
+
+```sh
+sudo apt-get update --error-on=any
+sudo apt-get install --no-install-recommends ca-certificates curl git xz-utils \
+  bzip2 unzip coreutils findutils util-linux passwd systemd gawk grep sed tar
+```
+
+Python, pip, Docker and global Node/pnpm are not Agent installation prerequisites.
+The synthetic validation suite additionally uses Python3, OpenSSL, ACL tools and
+locales. Do not install a database server to satisfy a synthetic test.
+
+Follow README's reviewed immutable checkout, run `bash install-agent.sh --check`
+with the same server/allowed roots/optional CA, then run the privileged fresh
+installer and enter the one-time token at its private prompt. Preflight runs
+without root, network, credentials or filesystem/service changes. It validates
+local prerequisites only, not remote TLS or future service-user access.
 
 Pin the reviewed source commit as shown in README. The checkout and download chain
 must be trusted before running a root script. Review CI for that exact commit.
@@ -154,6 +175,12 @@ An explicitly reviewed rollback uses `sudo bash upgrade-agent.sh --rollback
 | PROVENANCE timeout/mismatch   | Dedicated bounded verification remains; inspect private receipts, locale-compatible fixed checkout, no accepted-record rewrite  |
 | HEALTH_CHECK failure          | Inspect safe code, service stability and authenticated heartbeat; retain successful rollback and old Agent                      |
 | Missing distribution marker   | Stop: legacy monorepo migration requires separate review, never hand-edit the record                                            |
+| Unsupported OS/architecture | Only Ubuntu 22.04/24.04 x86_64 are installer targets; derivatives, other versions and ARM64 are refused. Check actual OS results before calling 24.04 supported. |
+| Missing required utility | Install the named utility through approved Ubuntu packages; do not replace global Node/pnpm or bypass checks. |
+| systemd/cgroup preflight fails | Require native systemd and unified cgroup v2. A container adapter is test-only; do not fake the service manager or disable AppArmor. |
+| Existing state/unit/app refused | Use protected standalone app-only upgrade, or separately reviewed migration. Do not delete identity/config to obtain a fresh-install PASS. |
+| Failed fresh installation leaves private files | Early failures remove staging; post-activation enrollment failure can retain app/config/state without starting the service. Preserve residuals for reviewed recovery; no automatic fresh-install rollback or purge is claimed. |
+| Noble source permission denial | Inspect canonical parents, account groups and narrow read/traverse ACLs. New home permissions do not justify recursive chmod/chown. |
 
 No production migration, service restart, storage mutation, automatic retention
 cleanup or long-lived GitHub credentials are authorized by this guide.

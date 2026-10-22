@@ -9,7 +9,14 @@ registry/deploy step. No long-lived GitHub token is needed by a public source ho
 
 Use a clean committed Linux checkout with approved private Node 22.18.0 and frozen
 pnpm 10.20.0 dependencies. Run typecheck, Agent tests, contracts, installer safety
-and isolated Ubuntu validation first. Then:
+and isolated Ubuntu validation first.
+
+The [Ubuntu matrix](UBUNTU_VALIDATION.md) covers both pinned 22.04 and 24.04
+userlands, including repeated reproducible packaging. A release manifest for
+linux-x64 is not a native OS acceptance certificate; review the pending
+[native VM gate](NATIVE_SYSTEMD_ACCEPTANCE.md) and exact target point release.
+
+Then build from the clean reviewed checkout:
 
 ```sh
 corepack pnpm package:release

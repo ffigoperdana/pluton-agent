@@ -1,5 +1,13 @@
 # Upgrade an existing enrolled Linux Agent
 
+For the two-release Ubuntu userland matrix and actual results, see the
+[Ubuntu audit](UBUNTU_VALIDATION.md). Ubuntu 24.04 native systemd/cgroup acceptance
+is [pending](NATIVE_SYSTEMD_ACCEPTANCE.md). These model tests do not establish
+native service restart/rollback, a 22.04-to-24.04 OS upgrade or monorepo migration.
+Fresh install OS validation does not broaden this upgrader's protected existing
+installation contract. Identity/config/TLS/policy preservation and clean-source,
+integrity, durability, admission and rollback requirements below remain in force.
+
 This standalone distribution upgrades **standalone installations only**. Missing
 `distribution=pluton-agent-standalone-v1` in existing protected provenance refuses
 activation; do not add it manually. Monorepo-installed Agents need the separate

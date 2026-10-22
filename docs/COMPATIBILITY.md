@@ -1,5 +1,21 @@
 # Versioned server/Agent contract
 
+## OS and architecture matrix
+
+| OS / architecture | Userland installation and regression validation | Native systemd / production acceptance |
+| --- | --- | --- |
+| Ubuntu Server 22.04 LTS x86_64 | TESTED: fresh install and complete container regression suite; [results](UBUNTU_VALIDATION.md) | Native boot/reboot/cgroup enforcement pending |
+| Ubuntu Server 24.04 LTS x86_64 | TESTED: pinned 24.04.5 container userland, fresh install and complete suite | Full native support pending [booted VM acceptance](NATIVE_SYSTEMD_ACCEPTANCE.md), including exact 24.04.5 Server image |
+| Other Ubuntu releases / Debian / derivatives | Unsupported; fresh installer refuses | No claim |
+| ARM64 / other architectures / non-systemd / cgroup v1 | Unsupported | No claim |
+
+Both installer target releases require the pinned private Linux x64 toolchain,
+native systemd and unified cgroup v2. Container tests share Docker's kernel and
+simulate systemctl activation; they establish userland evidence only. App-only
+upgrade is not an OS upgrade or a monorepo migration.
+
+## Versioned protocol
+
 This extraction preserves the 36 Agent TypeScript source files from Pluton Server
 source commit recorded in `contracts/extraction-source.json`; no runtime wire or
 security behavior changed. Package metadata now agrees with advertised Agent
