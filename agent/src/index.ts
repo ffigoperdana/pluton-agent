@@ -7,7 +7,7 @@ import {
 import { AgentClient } from "./client.js";
 import { readEnrollmentToken } from "./enrollmentToken.js";
 import { atAgentStage, formatAgentFailure } from "./errors.js";
-import { saveIdentity } from "./identity.js";
+import { lockEnrollment, saveEnrollmentIdentity } from "./identity.js";
 import { collectInventory } from "./inventory.js";
 import {
   preflightSource,
@@ -19,6 +19,7 @@ import { checkConnection, run, runOnce } from "./runtime.js";
 import { UPGRADE_PROTOCOL } from "./upgradeGuard.js";
 import { lstat } from "node:fs/promises";
 import { loadIdentity } from "./identity.js";
+import { networkPreflight } from "./networkPreflight.js";
 import {
   SourceAccessPolicy,
   readSourceAccessEnvironment,
@@ -53,6 +54,7 @@ function configFromArgs(args: string[]) {
 }
 
 function usage(): void {
+  console.log("       pluton-agent network-check --server <https://origin> [--ca-file <PEM>] (read-only unauthenticated health GET; no identity/token)");
   console.log(
     "Usage: pluton-agent enroll --server <url> (--token-stdin | --token <token>) [--data-dir <dir>]",
   );
@@ -242,7 +244,17 @@ async function main(): Promise<void> {
   const config = await atAgentStage("load-configuration", () =>
     args.length > 0 ? configFromArgs(args) : configFromEnvironment(),
   );
+  if (command === "network-check") {
+    for (let index = 0; index < args.length; index += 2) {
+      if (!["--server", "--ca-file"].includes(args[index]) || !args[index + 1] || args[index + 1].startsWith("--"))
+        throw new Error("Network preflight does not accept credentials or identity options.");
+    }
+    if (!(await networkPreflight(config))) process.exitCode = 1;
+    return;
+  }
   if (command === "enroll") {
+    const release = await atAgentStage("load-identity", () => lockEnrollment(config.dataDir));
+    try {
     const token = await atAgentStage("read-enrollment-token", () =>
       readEnrollmentToken(args),
     );
@@ -262,9 +274,10 @@ async function main(): Promise<void> {
       ),
     );
     await atAgentStage("save-identity", () =>
-      saveIdentity(config.dataDir, { ...result, completedCommands: [] }),
+      saveEnrollmentIdentity(config.dataDir, { ...result, completedCommands: [] }),
     );
     console.log(`Agent enrolled successfully: ${result.agentId}`);
+    } finally { await release(); }
     return;
   }
   if (command === "run") {

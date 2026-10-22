@@ -25,6 +25,7 @@ fail() {
 # the isolated checksum helpers are exercised below.
 # shellcheck disable=SC1090
 source "$INSTALLER"
+source "$REPOSITORY_ROOT/installers/lib/recover-partial.sh"
 
 assert_file() {
 	[[ -f "$1" ]] || fail "Expected file: $1"
@@ -353,6 +354,49 @@ test_fresh_failure_boundaries() {
 	if ( INSTALL_ROOT="$root/opt/pluton-agent"; CONFIG_FILE="$root/etc/pluton-agent.env"; STATE_DIR="$root/var/lib/pluton-agent"; SYSTEMD_UNIT="$root/etc/systemd/system/pluton-agent.service"; validate_fresh_install ) >/dev/null 2>&1; then fail 'Partial failed install admitted as fresh.'; fi
 }
 
+test_guarded_partial_recovery() {
+	local root item original
+	bash "$REPOSITORY_ROOT/recover-agent-install.sh" --help >/dev/null
+	for item in --force --token --server --purge --quarantine; do
+		if bash "$REPOSITORY_ROOT/recover-agent-install.sh" "$item" >/dev/null 2>&1; then fail 'Recovery accepted unsafe/incomplete arguments.'; fi
+	done
+	root="$(make_root recovery)"
+	if PLUTON_AGENT_TEST_ENROLL_FAIL=1 base_install "$root" > "$root/failure.log" 2>&1; then fail 'Expected partial failed enrollment.'; fi
+	chmod 0700 "$root/var/lib/pluton-agent"
+	# Production CLI rejects fixture injection; these are isolated model calls.
+	(
+		TEST_MODE=1; PLUTON_AGENT_TEST_ROOT="$root"; configure_paths
+		original="$(sha256sum "$INSTALL_ROOT/.verified-install" "$CONFIG_FILE")"
+		validate_partial_installation
+		[[ "$original" == "$(sha256sum "$INSTALL_ROOT/.verified-install" "$CONFIG_FILE")" ]] || fail 'Recovery check changed files.'
+		for item in identity.json .enrollment-123.tmp .enrollment-lock command-receipt.json; do
+			printf 'synthetic evidence\n' > "$STATE_DIR/$item"
+			if (validate_partial_installation) >/dev/null 2>&1; then fail 'Recovery accepted nonempty state.'; fi
+			assert_file "$STATE_DIR/$item"; rm "$STATE_DIR/$item"
+		done
+		ln -s "$root/absent" "$STATE_DIR/identity.json"
+		if (validate_partial_installation) >/dev/null 2>&1; then fail 'Recovery accepted dangling identity.'; fi
+		rm "$STATE_DIR/identity.json"
+		mkdir -p "$(dirname "$SYSTEMD_UNIT")"; printf 'synthetic unit\n' > "$SYSTEMD_UNIT"
+		if (validate_partial_installation) >/dev/null 2>&1; then fail 'Recovery accepted an existing service.'; fi
+		rm "$SYSTEMD_UNIT"
+		sed -i 's/^node=.*/node=v99.0.0/' "$INSTALL_ROOT/.verified-install"
+		if (validate_partial_installation) >/dev/null 2>&1; then fail 'Recovery accepted an unknown toolchain.'; fi
+		sed -i "s/^node=.*/node=$NODE_VERSION/" "$INSTALL_ROOT/.verified-install"
+		printf 'synthetic tampering\n' >> "$INSTALL_ROOT/app/dist/index.js"
+		if (validate_partial_installation) >/dev/null 2>&1; then fail 'Recovery accepted integrity mismatch.'; fi
+		sed -i '$d' "$INSTALL_ROOT/app/dist/index.js"
+		quarantine_partial_installation
+		assert_missing "$INSTALL_ROOT"; assert_missing "$CONFIG_FILE"; assert_missing "$STATE_DIR"
+		local recovered
+		recovered="$(find "$root/var/lib" -maxdepth 1 -type d -name 'pluton-agent-partial.*')"
+		[[ -n "$recovered" && "$(stat -c '%a' "$recovered")" == 700 ]] || fail 'Quarantine is not private.'
+		assert_file "$recovered/install/.verified-install"; assert_file "$recovered/config.env"
+		[[ "$(sha256sum "$recovered/config.env" | cut -d ' ' -f 1)" == "$(printf '%s\n' "$original" | tail -n 1 | cut -d ' ' -f 1)" ]] || fail 'Quarantine changed config bytes.'
+	)
+}
+
+test_guarded_partial_recovery
 test_ubuntu_platform_and_preflight
 test_fresh_failure_boundaries
 test_fresh_install_and_generated_files

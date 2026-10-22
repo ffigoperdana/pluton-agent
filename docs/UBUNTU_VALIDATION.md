@@ -5,6 +5,11 @@ Baseline: reviewed local `main`/`origin/main`
 synthetic installations. No production host, Agent, token, policy, server checkout
 or storage is required. Agent capability/protocol version remains **0.7.0**.
 
+Later independent dual-stack HTTPS/enrollment and guarded partial-recovery work
+has its own [audit and execution results](NETWORK_ENROLLMENT.md). The results and
+runtime-source identity statements in this document describe the Ubuntu-only
+change; the later runtime delta is explicit and separately versioned.
+
 ## Verdict and evidence boundaries
 
 Ubuntu 22.04 remains tested, and Ubuntu 24.04 passes the isolated userland matrix

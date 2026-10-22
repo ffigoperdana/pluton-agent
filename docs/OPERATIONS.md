@@ -44,6 +44,13 @@ uses no runtime npm packages; build dependencies are frozen in the minimal lockf
 
 ## Enrollment and paths
 
+If curl works but the private Node Agent fails, use the new source's explicit
+[Node HTTPS network preflight and safe diagnostics](NETWORK_ENROLLMENT.md).
+DNS family order or an HTTP 400 probe alone does not prove broken IPv6 or an
+invalid enrollment token. The transport selects one verified connection before
+credentials are sent and never retries an ambiguous enrollment HTTP request.
+Keep `install-agent.sh --check` as the local-only no-network prerequisite check.
+
 The compatible server administrator creates an enrollment token in **Sources →
 Add Remote Machine** with narrowly approved roots. The server-generated monorepo
 checkout/install URL is not automatically updated by this extraction. On a new
@@ -179,7 +186,8 @@ An explicitly reviewed rollback uses `sudo bash upgrade-agent.sh --rollback
 | Missing required utility | Install the named utility through approved Ubuntu packages; do not replace global Node/pnpm or bypass checks. |
 | systemd/cgroup preflight fails | Require native systemd and unified cgroup v2. A container adapter is test-only; do not fake the service manager or disable AppArmor. |
 | Existing state/unit/app refused | Use protected standalone app-only upgrade, or separately reviewed migration. Do not delete identity/config to obtain a fresh-install PASS. |
-| Failed fresh installation leaves private files | Early failures remove staging; post-activation enrollment failure can retain app/config/state without starting the service. Preserve residuals for reviewed recovery; no automatic fresh-install rollback or purge is claimed. |
+| Failed fresh installation leaves private files | Preserve residuals. The separate [guarded recovery](NETWORK_ENROLLMENT.md) accepts only verified app/config plus EMPTY state and no service/process, with independent remote unenrolled confirmation before quarantine. Any identity/temp/receipt/policy/lock refuses. |
+| curl succeeds but Node times out | Compare explicit Node automatic/IPv4/IPv6 health probes and fixed DNS/connect/TLS/status classifications. Do not disable IPv6/TLS, force system-wide IPv4, or automatically retry a possibly consumed token. |
 | Noble source permission denial | Inspect canonical parents, account groups and narrow read/traverse ACLs. New home permissions do not justify recursive chmod/chown. |
 
 No production migration, service restart, storage mutation, automatic retention

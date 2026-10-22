@@ -33,7 +33,26 @@ export function validate() {
   const audit = JSON.parse(
     fs.readFileSync(path.join(root, 'contracts/extraction-source.json')),
   );
-  for (const { file, sha256 } of audit.agentSource) {
+  // Preserve the immutable extraction record. Independent runtime changes have
+  // a separately versioned, explicit hash delta, not an extraction parity bypass.
+  const delta = JSON.parse(fs.readFileSync(path.join(root, 'contracts/standalone-source-v1.json')));
+  const digest = (source) => crypto.createHash('sha256').update(source.replace(/\r\n/g, '\n')).digest('hex');
+  if (delta.format !== 1 || delta.agentVersion !== app.version ||
+      delta.baseRevision !== '095088beeb3a10dc5fdda4f55db07fa4d17240be' ||
+      delta.extractionManifestSha256 !== digest(fs.readFileSync(path.join(root, 'contracts/extraction-source.json'), 'utf8')))
+    throw Error('Invalid independent source baseline');
+  const expected = new Map(audit.agentSource.map(({file, sha256}) => [file, sha256]));
+  if (fs.lstatSync(path.join(root, 'agent/src')).isSymbolicLink()) throw Error('Source directory link');
+  const changed = new Set();
+  for (const item of delta.changes) {
+    if (!/^agent\/src\/[A-Za-z0-9]+(?:\.test)?\.ts$/.test(item.file) || changed.has(item.file) ||
+        item.extractedSha256 !== (expected.get(item.file) ?? null) || !/^[a-f0-9]{64}$/.test(item.sha256) ||
+        typeof item.reason !== 'string' || !item.reason.trim()) throw Error('Invalid explicit source change');
+    changed.add(item.file); expected.set(item.file, item.sha256);
+  }
+  const actualFiles = fs.readdirSync(path.join(root, 'agent/src')).map((file) => 'agent/src/' + file).sort();
+  if (JSON.stringify(actualFiles) !== JSON.stringify([...expected.keys()].sort())) throw Error('Unversioned Agent source file');
+  for (const [file, sha256] of expected) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     if (fs.lstatSync(path.join(root, file)).isSymbolicLink())
       throw Error('Source link');
@@ -42,7 +61,7 @@ export function validate() {
       .update(source.replace(/\r\n/g, '\n'))
       .digest('hex');
     if (actual !== sha256)
-      throw Error('Initial extraction parity changed: ' + file);
+      throw Error('Versioned standalone source parity changed: ' + file);
     for (const match of source.matchAll(
       /(?:from\s*|import\s*\()\s*["']([^"']+)["']/g,
     )) {
@@ -51,7 +70,7 @@ export function validate() {
     }
   }
   console.log(
-    `PASS standalone layout and ${audit.agentSource.length} byte-identical Agent source files; no server imports`,
+    `PASS standalone layout and ${expected.size} versioned Agent source files (${changed.size} explicit independent changes); no server imports`,
   );
 }
 if (

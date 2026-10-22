@@ -1,5 +1,6 @@
 import { AgentHttpError } from "./transport.js";
 import { SourcePolicyError } from "./sourceAccessPolicy.js";
+import { AgentNetworkError } from "./network.js";
 
 export type AgentOperationStage =
   | "load-configuration"
@@ -37,6 +38,18 @@ function isSafeHttpStatus(value: number): boolean {
 }
 
 export function sanitizeAgentError(error: unknown): string {
+  if (error instanceof AgentNetworkError) {
+    const messages: Record<string, string> = {
+      DNS_FAILURE: "DNS resolution failed", DNS_TIMEOUT: "DNS resolution timed out",
+      CONNECT_TIMEOUT: "TCP/TLS connection timed out", CONNECT_FAILURE: "TCP connection failed",
+      TLS_VERIFICATION_FAILED: "TLS verification failed", CONNECTION_INTERRUPTED: "connection interrupted",
+      REQUEST_TIMEOUT: "request timed out", INVALID_RESPONSE: "invalid server response",
+      RESPONSE_TOO_LARGE: "server response exceeded size limit", ENROLLMENT_REJECTED: "enrollment rejected",
+      REQUEST_REJECTED: "request rejected",
+    };
+    return typeof error.code === "string" && Object.hasOwn(messages, error.code)
+      ? messages[error.code] : "operation failed";
+  }
   if (
     error instanceof SourcePolicyError &&
     /^source-[a-z0-9-]{1,80}$/.test(error.code)
@@ -47,6 +60,8 @@ export function sanitizeAgentError(error: unknown): string {
   }
   if (error instanceof Error) {
     switch (error.message) {
+      case "Existing identity or enrollment state requires operator review.":
+        return "existing identity or enrollment state requires operator review";
       case "Agent identity is required. Enroll this agent first.":
         return "agent identity is unavailable";
       case "Agent identity file is invalid. Re-enroll this agent.":

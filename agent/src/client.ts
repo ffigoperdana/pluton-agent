@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { AgentOperationError } from "./errors.js";
 import { AgentTransport } from "./transport.js";
+import { AgentNetworkError } from "./network.js";
 import { signRequest, verifyCommandDetailed } from "./protocol.js";
 import type {
   AgentCommandEnvelope,
@@ -30,7 +31,16 @@ export class AgentClient {
     secret: string;
     pollIntervalSeconds: number;
   }> {
-    return this.postUnsigned("/api/agent/enroll", { token, inventory });
+    const result = await this.postUnsigned<{
+      deviceId: string; agentId: string; secret: string; pollIntervalSeconds: number;
+    }>("/api/agent/enroll", { token, inventory });
+    if (!result || typeof result.deviceId !== "string" || !result.deviceId || result.deviceId.length > 1024 ||
+        typeof result.agentId !== "string" || !result.agentId || result.agentId.length > 1024 ||
+        typeof result.secret !== "string" || !result.secret || result.secret.length > 4096 ||
+        !Number.isInteger(result.pollIntervalSeconds) || result.pollIntervalSeconds < 1) {
+      throw new AgentNetworkError("INVALID_RESPONSE");
+    }
+    return result;
   }
 
   async heartbeat(inventory: AgentInventory): Promise<void> {
@@ -141,8 +151,9 @@ export class AgentClient {
   ): Promise<T> {
     const raw = JSON.stringify(body);
     const response = await this.transport.post<ApiResponse<T>>(pathname, raw);
-    if (!response.success)
-      throw new Error(response.error || "Server rejected the agent request.");
+    if (!response || typeof response.success !== "boolean") throw new AgentNetworkError("INVALID_RESPONSE");
+    if (!response.success) throw new AgentNetworkError("ENROLLMENT_REJECTED");
+    if (!("result" in response)) throw new AgentNetworkError("INVALID_RESPONSE");
     return response.result;
   }
 
@@ -169,8 +180,9 @@ export class AgentClient {
       "x-pluton-agent-nonce": nonce,
       "x-pluton-agent-signature": signature,
     });
-    if (!response.success)
-      throw new Error(response.error || "Server rejected the agent request.");
+    if (!response || typeof response.success !== "boolean") throw new AgentNetworkError("INVALID_RESPONSE");
+    if (!response.success) throw new AgentNetworkError("REQUEST_REJECTED");
+    if (!("result" in response)) throw new AgentNetworkError("INVALID_RESPONSE");
     return response.result;
   }
 }

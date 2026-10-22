@@ -55,11 +55,21 @@ CA is supplied with `--ca-file /path/to/approved-ca.pem`; TLS validation stays o
 The installer builds using its private Node/Corepack and pnpm **10.20.0**. No global
 Node, npm or pnpm installation is required or replaced.
 
+For curl/Node connectivity differences, explicit read-only Node HTTPS/family
+diagnostics and enrollment failure categories, see
+[network and enrollment troubleshooting](docs/NETWORK_ENROLLMENT.md).
+`--check` remains local-only. The new `network-check` CLI sends unauthenticated
+health GETs without reading a token or identity; HTTPS verification stays enabled.
+
 `install-agent.sh` is **fresh-install only**. An existing installation, config or
 identity is refused; it must not silently adopt a monorepo Agent. For an already
 standalone installation use `sudo bash upgrade-agent.sh --check`, then the normal
 app-only upgrade after drain and separate operational approval. Existing monorepo
 Agents remain on their old upgrade path until a reviewed migration is available.
+An identity-less failed first installation may qualify for the separate guarded
+`recover-agent-install.sh --check` and explicit private quarantine procedure in
+the [recovery guide](docs/NETWORK_ENROLLMENT.md). Any identity/state/service
+evidence refuses; there is no force-reinstall bypass or automatic enrollment retry.
 
 ## Developer checks
 

@@ -15,6 +15,10 @@ The [Ubuntu matrix](UBUNTU_VALIDATION.md) covers both pinned 22.04 and 24.04
 userlands, including repeated reproducible packaging. A release manifest for
 linux-x64 is not a native OS acceptance certificate; review the pending
 [native VM gate](NATIVE_SYSTEMD_ACCEPTANCE.md) and exact target point release.
+Independent [network/enrollment changes](NETWORK_ENROLLMENT.md) retain protocol
+0.7.0 but require their new reviewed source commit and explicit source hash delta.
+Regenerate commands pinned to the older source; never overwrite an immutable
+release tag/asset to deliver changed bytes.
 
 Then build from the clean reviewed checkout:
 

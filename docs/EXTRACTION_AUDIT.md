@@ -5,6 +5,12 @@ Subsequent Ubuntu 24.04 validation is recorded in the versioned
 [native VM gate](NATIVE_SYSTEMD_ACCEPTANCE.md). Historical extraction evidence
 below remains scoped to its original run; it is not proof of native 24.04 support.
 
+Independent runtime development after reviewed standalone main `095088b` is
+recorded in [the HTTPS/enrollment audit](NETWORK_ENROLLMENT.md) and explicit
+`contracts/standalone-source-v1.json`. The original extraction manifest and golden
+protocol vectors are retained. Byte-identity statements below describe the
+initial extraction, not the subsequent independently versioned transport changes.
+
 ## Scope and authority
 
 Source: the merged Pluton main commit recorded in `contracts/extraction-source.json`.

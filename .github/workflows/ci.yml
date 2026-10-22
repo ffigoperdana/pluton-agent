@@ -29,5 +29,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Agent-only build context. No production services, host mounts or privileged Docker.
-      - run: docker build --platform linux/amd64 --progress=plain --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} --file tests/ubuntu/Dockerfile --tag pluton-agent-validation:ci-${{ matrix.ubuntu }} .
+      - run: docker build --platform linux/amd64 --progress=plain --target validation --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} --file tests/ubuntu/Dockerfile --tag pluton-agent-validation:ci-${{ matrix.ubuntu }} .
+      - run: docker build --platform linux/amd64 --progress=plain --target network-routing --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} --file tests/ubuntu/Dockerfile --tag pluton-agent-routing:ci-${{ matrix.ubuntu }} .
+      # Traffic control affects this disposable container's private loopback only.
+      - run: docker run --rm --network none --cap-add NET_ADMIN pluton-agent-routing:ci-${{ matrix.ubuntu }}
       # This workflow validates only. No release, registry, deployment or write permissions.
