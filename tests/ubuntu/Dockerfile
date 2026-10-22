@@ -15,7 +15,7 @@ COPY . .
 RUN touch /opt/pluton-disposable-ubuntu-test && chmod 0600 /opt/pluton-disposable-ubuntu-test \
     && find . -name '*.sh' -type f -exec chmod 0755 {} + \
     && install -m 0755 tests/ubuntu/systemctl-fixture.sh /usr/local/bin/systemctl \
-    && bash tests/ubuntu/fresh-install.sh && bash tests/ubuntu/partial-recovery.sh \
+    && bash tests/ubuntu/download-failure.sh && bash tests/ubuntu/fresh-install.sh && bash tests/ubuntu/partial-recovery.sh \
     && bash tests/ubuntu/legacy-refusal.sh /workspace
 ENV PATH=/opt/pluton-agent/runtime/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN ln -s /opt/pluton-agent/runtime/bin/node /usr/local/bin/node \

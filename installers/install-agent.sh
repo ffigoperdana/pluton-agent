@@ -33,6 +33,8 @@ declare -a ALLOWED_ROOTS=()
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPOSITORY_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+# shellcheck source=lib/dependency-download.sh
+source "$SCRIPT_DIR/lib/dependency-download.sh"
 TEST_MODE="${PLUTON_AGENT_TEST_MODE:-0}"
 STAGE_ROOT=''
 REENROLL_BACKUP=''
@@ -47,7 +49,6 @@ SYSTEMD_UNIT=''
 PREVIOUS_INSTALL_ROOT=''
 PREVIOUS_CONFIG_FILE=''
 PREVIOUS_SYSTEMD_UNIT=''
-SERVICE_WAS_ACTIVE='false'
 NODE_ARCHIVE_SHA256=''
 REUSED_TOOLCHAIN='false'
 
@@ -202,7 +203,7 @@ require_root() {
 }
 
 require_commands() {
-	local -a commands=(awk bzip2 cat chmod chown cp curl cut dirname find getent grep groupadd head id install mktemp mv readlink realpath rm runuser sed sha256sum sort stat systemctl tar uname unzip useradd xargs xz)
+	local -a commands=(awk bzip2 cat chmod chown cp curl cut dirname find getent grep groupadd head id install mktemp mv readlink realpath rm rmdir runuser sed sha256sum sleep sort stat systemctl tar uname unzip useradd xargs xz)
 	local command
 	for command in "${commands[@]}"; do
 		command -v "$command" >/dev/null 2>&1 || fail "Required utility is unavailable: $command"
@@ -242,7 +243,7 @@ validate_platform() {
 validate_fresh_install() {
 	[[ ! -e "$INSTALL_ROOT" && ! -L "$INSTALL_ROOT" && ! -e "$CONFIG_FILE" && ! -L "$CONFIG_FILE" &&
 	   ! -e "$STATE_DIR" && ! -L "$STATE_DIR" && ! -e "$SYSTEMD_UNIT" && ! -L "$SYSTEMD_UNIT" ]] ||
-		fail 'Fresh standalone installation only; existing Agents require an explicitly reviewed upgrade or migration.'
+		fail 'Fresh standalone installation only; existing Agents require an explicitly reviewed upgrade or migration. Preserve partial state; inspect with recover-agent-install.sh --check. Never automatically retry enrollment.'
 }
 
 compatibility_preflight() {
@@ -326,7 +327,6 @@ join_allowed_roots() {
 
 ensure_agent_account() {
 	if is_test_mode; then
-		create_directory 0700 "$STATE_DIR"
 		return
 	fi
 	if ! getent group "$AGENT_GROUP" >/dev/null; then
@@ -341,7 +341,16 @@ ensure_agent_account() {
 	for forbidden in docker root sudo wheel; do
 		[[ " $groups " != *" $forbidden "* ]] || fail "The pluton-agent account must not belong to the $forbidden group."
 	done
-	install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0700 -- "$STATE_DIR"
+}
+
+create_agent_state() {
+	if is_test_mode; then create_directory 0700 "$STATE_DIR"
+	else
+		# Exclusive creation: do not adopt/chown a state directory that appeared
+		# during a slow build, even if it is empty.
+		mkdir -m 0700 -- "$STATE_DIR" || fail 'Agent state appeared during preparation; existing state was preserved.'
+		chown "$AGENT_USER:$AGENT_GROUP" -- "$STATE_DIR"
+	fi
 }
 
 validate_agent_access_to_roots() {
@@ -396,12 +405,16 @@ cleanup_stage() {
 			mv -- "$REENROLL_BACKUP" "$identity_path"
 		fi
 	fi
-	if ! is_test_mode && [[ "$exit_status" -ne 0 && "$SERVICE_WAS_ACTIVE" == 'true' && -d "$INSTALL_ROOT" ]]; then
-		systemctl daemon-reload || log 'Could not reload systemd while restoring the previous agent.'
-		systemctl start "$SERVICE_NAME" || log 'Could not restart the previous agent service automatically.'
-	fi
 	if [[ -n "${STAGE_ROOT:-}" && -d "$STAGE_ROOT" ]]; then
 		rm -rf -- "$STAGE_ROOT"
+	fi
+	if [[ "$exit_status" -ne 0 ]]; then
+		if [[ -e "$INSTALL_ROOT" || -L "$INSTALL_ROOT" || -e "$CONFIG_FILE" || -L "$CONFIG_FILE" ||
+		      -e "$STATE_DIR" || -L "$STATE_DIR" || -e "$SYSTEMD_UNIT" || -L "$SYSTEMD_UNIT" ]]; then
+			log 'Incomplete installation: final or existing state was preserved. Do not retry enrollment automatically. Inspect with recover-agent-install.sh --check; nonempty/unknown state requires operator review.'
+		else
+			log 'Preparation failed before activation; no final app/config/state/unit exists. Private staging was removed; resolve the reported failure before a fresh attempt.'
+		fi
 	fi
 	return "$exit_status"
 }
@@ -437,6 +450,7 @@ create_stage_root() {
 	create_directory 0755 "$INSTALL_PARENT"
 	STAGE_ROOT="$(mktemp -d "$INSTALL_PARENT/.pluton-agent-stage.XXXXXX")"
 	trap cleanup_stage EXIT
+	mkdir -m 0700 -- "$STAGE_ROOT/.work"
 }
 
 verify_node_checksum() {
@@ -472,13 +486,13 @@ prepare_private_node_runtime() {
 	fi
 
 	local download_dir archive checksums distribution extracted
-	download_dir="$(mktemp -d)"
+	download_dir="$(mktemp -d "$STAGE_ROOT/.work/node.XXXXXX")"
 	distribution="node-${NODE_VERSION}-linux-x64.tar.xz"
 	archive="$download_dir/$distribution"
 	checksums="$download_dir/SHASUMS256.txt"
 	log "Downloading the private Node.js ${NODE_VERSION} runtime."
-	curl --fail --location --proto '=https' --tlsv1.2 --output "$archive" "$NODE_DIST_BASE/$NODE_VERSION/$distribution"
-	curl --fail --location --proto '=https' --tlsv1.2 --output "$checksums" "$NODE_DIST_BASE/$NODE_VERSION/SHASUMS256.txt"
+	download_dependency node "$archive" || fail 'Node dependency download failed before activation.'
+	download_dependency node-checksums "$checksums" || fail 'Node checksum-index download failed before activation.'
 	verify_node_checksum "$archive" "$checksums" || fail 'Node.js checksum verification failed; the archive was not extracted.'
 	NODE_ARCHIVE_SHA256="$(sha256sum "$archive" | cut -d ' ' -f 1)"
 	tar -xJf "$archive" -C "$download_dir"
@@ -498,12 +512,12 @@ prepare_private_backup_binaries() {
 	fi
 
 	local download_dir restic_archive rclone_archive rclone_dir
-	download_dir="$(mktemp -d)"
+	download_dir="$(mktemp -d "$STAGE_ROOT/.work/backup.XXXXXX")"
 	restic_archive="$download_dir/restic_${RESTIC_VERSION}_linux_amd64.bz2"
 	rclone_archive="$download_dir/rclone-v${RCLONE_VERSION}-linux-amd64.zip"
 	log "Downloading private Restic ${RESTIC_VERSION} and Rclone ${RCLONE_VERSION} binaries."
-	curl --fail --location --proto '=https' --tlsv1.2 --output "$restic_archive" "$RESTIC_RELEASE_BASE/$(basename -- "$restic_archive")"
-	curl --fail --location --proto '=https' --tlsv1.2 --output "$rclone_archive" "$RCLONE_RELEASE_BASE/$(basename -- "$rclone_archive")"
+	download_dependency restic "$restic_archive" || fail 'Restic dependency download failed before activation.'
+	download_dependency rclone "$rclone_archive" || fail 'Rclone dependency download failed before activation.'
 	verify_pinned_checksum "$restic_archive" "$RESTIC_LINUX_AMD64_SHA256" || fail 'Restic checksum verification failed; the archive was not extracted.'
 	verify_pinned_checksum "$rclone_archive" "$RCLONE_LINUX_AMD64_SHA256" || fail 'Rclone checksum verification failed; the archive was not extracted.'
 	bzip2 -dc -- "$restic_archive" > "$STAGE_ROOT/bin/restic"
@@ -528,7 +542,7 @@ build_agent_app_from_source() {
 
 	[[ -f "$REPOSITORY_ROOT/package.json" && -f "$REPOSITORY_ROOT/pnpm-lock.yaml" && -f "$REPOSITORY_ROOT/pnpm-workspace.yaml" && -f "$REPOSITORY_ROOT/agent/package.json" ]] || fail 'Run the installer from a complete standalone pluton-agent source tree.'
 	local build_dir corepack_js
-	build_dir="$(mktemp -d)"
+	build_dir="$(mktemp -d "$STAGE_ROOT/.work/build.XXXXXX")"
 	cp -- "$REPOSITORY_ROOT/package.json" "$REPOSITORY_ROOT/pnpm-lock.yaml" "$REPOSITORY_ROOT/pnpm-workspace.yaml" "$build_dir/"
 	mkdir -p -- "$build_dir/agent"
 	(
@@ -646,25 +660,31 @@ write_install_provenance() {
 	chmod 0644 -- "$STAGE_ROOT/.verified-install"
 }
 
-stop_service_if_present() {
+assert_no_service_before_activation() {
 	if is_test_mode; then return; fi
-	if [[ -f "$SYSTEMD_UNIT" ]]; then
-		if systemctl is-active --quiet "$SERVICE_NAME"; then SERVICE_WAS_ACTIVE='true'; fi
-		systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
-	fi
+	local unit status
+	for unit in "$SYSTEMD_UNIT" "/run/systemd/system/$SERVICE_NAME" "/usr/lib/systemd/system/$SERVICE_NAME" "/lib/systemd/system/$SERVICE_NAME"; do
+		[[ ! -e "$unit" && ! -L "$unit" ]] || fail 'Existing Agent service definition requires review; no service was stopped or restarted.'
+	done
+	status="$(systemctl show "$SERVICE_NAME" --property=LoadState,ActiveState,MainPID 2>/dev/null)" || {
+		[[ $? == 4 ]] || fail 'Could not establish Agent service absence; installation refused.'
+	}
+	[[ "$(printf '%s\n' "$status" | sort)" == $'ActiveState=inactive\nLoadState=not-found\nMainPID=0' ]] || fail 'Existing or loaded Agent service requires review; no service was stopped or restarted.'
 }
 
 activate_staged_files() {
-	PREVIOUS_INSTALL_ROOT="$INSTALL_PARENT/.pluton-agent-previous.$$"
+	local previous_root="$INSTALL_PARENT/.pluton-agent-previous.$$"
+	rmdir -- "$STAGE_ROOT/.work"
 	normalize_staged_install_permissions
 	write_install_provenance
-	if [[ -e "$INSTALL_ROOT" ]]; then
-		rm -rf -- "$PREVIOUS_INSTALL_ROOT"
-		mv -- "$INSTALL_ROOT" "$PREVIOUS_INSTALL_ROOT"
-	else
-		PREVIOUS_INSTALL_ROOT=''
+	if [[ -e "$INSTALL_ROOT" || -L "$INSTALL_ROOT" ]]; then
+		is_test_mode || fail 'Agent application appeared during preparation; existing installation was preserved.'
+		[[ ! -e "$previous_root" && ! -L "$previous_root" ]] || fail 'Previous transaction evidence requires review.'
+		mv -- "$INSTALL_ROOT" "$previous_root"
+		PREVIOUS_INSTALL_ROOT="$previous_root"
 	fi
-	mv -- "$STAGE_ROOT" "$INSTALL_ROOT"
+	mv -T --no-clobber -- "$STAGE_ROOT" "$INSTALL_ROOT"
+	[[ ! -d "$STAGE_ROOT" ]] || fail 'Agent application appeared during activation; existing installation was preserved.'
 	STAGE_ROOT=''
 }
 
@@ -850,7 +870,7 @@ enable_and_start_service() {
 	fi
 	systemctl daemon-reload
 	systemctl enable "$SERVICE_NAME" >/dev/null
-	systemctl restart "$SERVICE_NAME"
+	systemctl start "$SERVICE_NAME"
 	systemctl is-active --quiet "$SERVICE_NAME" || fail 'The service did not become active. Inspect: journalctl -u pluton-agent -n 100 --no-pager'
 }
 
@@ -861,9 +881,8 @@ install_agent() {
 	validate_server_url
 	validate_allowed_roots
 	validate_platform
-	ensure_agent_account
+	assert_no_service_before_activation
 	preserve_existing_optional_config
-	validate_agent_access_to_roots
 	create_stage_root
 	prepare_update_rollback
 	if ! try_reuse_verified_install; then
@@ -872,7 +891,13 @@ install_agent() {
 		prepare_private_backup_binaries
 		build_agent_app_from_source
 	fi
-	stop_service_if_present
+	# Preparation must succeed before creating the service account or state.
+	# Recheck the guard after potentially slow acquisition/build work.
+	if ! is_test_mode; then validate_fresh_install; fi
+	ensure_agent_account
+	validate_agent_access_to_roots
+	create_agent_state
+	assert_no_service_before_activation
 	activate_staged_files
 	validate_installed_runtime_access
 	write_config

@@ -41,6 +41,11 @@ Restic 0.19.1 and Rclone 1.75.1 have embedded SHA-256 pins; Node v22.18.0 is ver
 against its version-specific HTTPS SHASUMS256 index. This does not claim a detached
 signature check that the current installer does not implement. The application
 uses no runtime npm packages; build dependencies are frozen in the minimal lockfile.
+Pinned dependency GETs have bounded retries (4 attempts, 2/4/8-second backoff,
+30-second connect, 120-second transfer and 300-second total per artifact).
+Download/build failures before activation leave no final app/config/state/unit.
+See the [download audit and recovery procedure](INSTALLER_DOWNLOADS.md); this retry
+policy never applies to enrollment or requests containing a token.
 
 ## Enrollment and paths
 
@@ -190,7 +195,7 @@ An explicitly reviewed rollback uses `sudo bash upgrade-agent.sh --rollback
 | Missing required utility | Install the named utility through approved Ubuntu packages; do not replace global Node/pnpm or bypass checks. |
 | systemd/cgroup preflight fails | Require native systemd and unified cgroup v2. A container adapter is test-only; do not fake the service manager or disable AppArmor. |
 | Existing state/unit/app refused | Use protected standalone app-only upgrade, or separately reviewed migration. Do not delete identity/config to obtain a fresh-install PASS. |
-| Failed fresh installation leaves private files | Preserve residuals. The separate [guarded recovery](NETWORK_ENROLLMENT.md) accepts only verified app/config plus EMPTY state and no service/process, with independent remote unenrolled confirmation before quarantine. Any identity/temp/receipt/policy/lock refuses. |
+| Failed fresh installation leaves private files | Preserve residuals. [Guarded recovery](INSTALLER_DOWNLOADS.md) accepts verified app/config plus EMPTY state, or legacy EMPTY state only with app/config absent, and no service/process. Independently confirm remote unenrolled status before quarantine. Any identity/temp/receipt/policy/lock refuses. |
 | curl succeeds but Node times out | Compare explicit Node automatic/IPv4/IPv6 health probes and fixed DNS/connect/TLS/status classifications. Do not disable IPv6/TLS, force system-wide IPv4, or automatically retry a possibly consumed token. |
 | Noble source permission denial | Inspect canonical parents, account groups and narrow read/traverse ACLs. New home permissions do not justify recursive chmod/chown. |
 

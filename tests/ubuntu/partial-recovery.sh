@@ -18,6 +18,24 @@ systemctl stop pluton-agent.service
 mv /var/lib/pluton-agent "$private/original-state"
 install -d -o pluton-agent -g pluton-agent -m 0700 /var/lib/pluton-agent
 rm /etc/systemd/system/pluton-agent.service
+# Old downloader failures left only this empty state directory. No application
+# without provenance is admitted: app/config must both be completely absent.
+mv /opt/pluton-agent "$private/installed-app"
+mv /etc/pluton-agent.env "$private/installed-config"
+bash recover-agent-install.sh --check
+printf 'preserve synthetic evidence\n' > /var/lib/pluton-agent/.enrollment-lock
+if bash recover-agent-install.sh --quarantine --confirm-unenrolled >/tmp/empty-state-refusal.log 2>&1; then exit 93; fi
+[[ -f /var/lib/pluton-agent/.enrollment-lock ]]
+rm /var/lib/pluton-agent/.enrollment-lock
+bash recover-agent-install.sh --quarantine --confirm-unenrolled
+empty_quarantine=$(find /var/lib -maxdepth 1 -type d -name 'pluton-agent-partial.*')
+[[ -d "$empty_quarantine/state" && "$(stat -c '%u:%a' "$empty_quarantine")" == 0:700 ]]
+[[ ! -e "$empty_quarantine/install" && ! -e "$empty_quarantine/config.env" ]]
+mv "$empty_quarantine/state" /var/lib/pluton-agent
+rmdir "$empty_quarantine"
+mv "$private/installed-app" /opt/pluton-agent
+mv "$private/installed-config" /etc/pluton-agent.env
+printf 'PASS legacy empty-state-only recovery; hidden enrollment evidence refuses and is preserved\n'
 bash recover-agent-install.sh --check
 if bash recover-agent-install.sh --quarantine >/tmp/recovery-confirmation.log 2>&1; then exit 92; fi
 bash recover-agent-install.sh --quarantine --confirm-unenrolled
