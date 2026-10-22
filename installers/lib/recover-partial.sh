@@ -19,29 +19,40 @@ recovery_protected_path() {
 }
 
 validate_partial_installation() {
-	[[ -d "$INSTALL_ROOT" && -f "$CONFIG_FILE" && -d "$STATE_DIR" && ! -L "$STATE_DIR" &&
+	[[ -d "$STATE_DIR" && ! -L "$STATE_DIR" &&
 	   ! -e "$SYSTEMD_UNIT" && ! -L "$SYSTEMD_UNIT" ]] || fail 'Recovery requires an incomplete first install with no service definition.'
-	recovery_protected_path "$INSTALL_ROOT"
-	recovery_protected_path "$CONFIG_FILE" 600
-	recovery_protected_path "$INSTALL_ROOT/.verified-install" 644
 	recovery_protected_path "$(dirname "$STATE_DIR")"
+	# Older download failures could leave ONLY the empty service-owned directory.
+	# No application is admitted/executed without provenance in this branch.
+	PARTIAL_INSTALL_KIND='empty-state-only'
+	local -a partial_paths=("$STATE_DIR")
+	if [[ -e "$INSTALL_ROOT" || -L "$INSTALL_ROOT" || -e "$CONFIG_FILE" || -L "$CONFIG_FILE" ]]; then
+		PARTIAL_INSTALL_KIND='verified-app-config'
+		[[ -d "$INSTALL_ROOT" && -f "$CONFIG_FILE" ]] || fail 'Unknown partial app/config layout; separate recovery review is required.'
+		recovery_protected_path "$INSTALL_ROOT"
+		recovery_protected_path "$CONFIG_FILE" 600
+		recovery_protected_path "$INSTALL_ROOT/.verified-install" 644
+		partial_paths+=("$INSTALL_ROOT" "$CONFIG_FILE")
+	fi
 	local expected_device entry
 	expected_device="$(stat -c '%d' "$(dirname "$STATE_DIR")")"
-	for entry in "$INSTALL_ROOT" "$CONFIG_FILE" "$STATE_DIR"; do
+	for entry in "${partial_paths[@]}"; do
 		[[ "$(stat -c '%d' "$entry")" == "$expected_device" ]] || fail 'Quarantine requires same-filesystem renames; separate recovery review is required.'
 	done
 	# ANY state, including an identity, temporary identity, policy, receipt, lock
 	# or hidden file is evidence requiring separate operator review. Never purge.
 	[[ "$(stat -c '%a' "$STATE_DIR")" == 700 && -z "$(find "$STATE_DIR" -mindepth 1 -print -quit)" ]] || fail 'Agent state is not empty; identity/receipts/partial enrollment must be preserved for review.'
-	grep -Fx 'distribution=pluton-agent-standalone-v1' "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Recovery requires protected standalone provenance.'
-	grep -Fx 'format=1' "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial installation provenance.'
-	grep -Fx "node=$NODE_VERSION" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial Node toolchain.'
-	grep -Fx "restic=$RESTIC_VERSION:$RESTIC_LINUX_AMD64_SHA256" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial Restic pin.'
-	grep -Fx "rclone=$RCLONE_VERSION:$RCLONE_LINUX_AMD64_SHA256" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial rclone pin.'
-	[[ -z "$(find "$INSTALL_ROOT" -mindepth 1 -maxdepth 1 ! -name app ! -name bin ! -name runtime ! -name .verified-install -print -quit)" ]] || fail 'Unexpected install state or transaction evidence; recovery refused.'
-	local digest
-	digest="$(verified_tree_digest "$INSTALL_ROOT")" || fail 'Partial artifacts failed ownership or integrity checks.'
-	grep -Fx "tree=$digest" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Partial artifacts differ from recorded SHA-256 integrity.'
+	if [[ "$PARTIAL_INSTALL_KIND" == verified-app-config ]]; then
+		grep -Fx 'distribution=pluton-agent-standalone-v1' "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Recovery requires protected standalone provenance.'
+		grep -Fx 'format=1' "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial installation provenance.'
+		grep -Fx "node=$NODE_VERSION" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial Node toolchain.'
+		grep -Fx "restic=$RESTIC_VERSION:$RESTIC_LINUX_AMD64_SHA256" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial Restic pin.'
+		grep -Fx "rclone=$RCLONE_VERSION:$RCLONE_LINUX_AMD64_SHA256" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial rclone pin.'
+		[[ -z "$(find "$INSTALL_ROOT" -mindepth 1 -maxdepth 1 ! -name app ! -name bin ! -name runtime ! -name .verified-install -print -quit)" ]] || fail 'Unexpected install state or transaction evidence; recovery refused.'
+		local digest
+		digest="$(verified_tree_digest "$INSTALL_ROOT")" || fail 'Partial artifacts failed ownership or integrity checks.'
+		grep -Fx "tree=$digest" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Partial artifacts differ from recorded SHA-256 integrity.'
+	fi
 	if is_test_mode; then
 		[[ ! -e "$PLUTON_AGENT_TEST_ROOT/service-active" ]] || fail 'An Agent process is active; recovery refused.'
 	else
@@ -75,11 +86,13 @@ quarantine_partial_installation() {
 	destination="$(mktemp -d "$parent/pluton-agent-partial.XXXXXXXX")"
 	chmod 0700 "$destination"
 	log "Quarantine created: $destination. Retain it if any move fails; nothing is deleted."
-	mv -- "$INSTALL_ROOT" "$destination/install"
-	if ! is_test_mode; then sync -f "$destination"; fi
-	mv -- "$CONFIG_FILE" "$destination/config.env"
-	if ! is_test_mode; then sync -f "$destination"; fi
+	if [[ "$PARTIAL_INSTALL_KIND" == verified-app-config ]]; then
+		mv -- "$INSTALL_ROOT" "$destination/install"
+		if ! is_test_mode; then sync -f "$destination"; fi
+		mv -- "$CONFIG_FILE" "$destination/config.env"
+		if ! is_test_mode; then sync -f "$destination"; fi
+	fi
 	mv -- "$STATE_DIR" "$destination/state"
 	if ! is_test_mode; then sync -f "$destination"; fi
-	log 'Partial app/config/empty state quarantined. No service, identity, source data or server enrollment was modified. Fresh-install guards remain active.'
+	log "Eligible partial installation ($PARTIAL_INSTALL_KIND) quarantined. No service, identity, source data or server enrollment was modified. Fresh-install guards remain active."
 }

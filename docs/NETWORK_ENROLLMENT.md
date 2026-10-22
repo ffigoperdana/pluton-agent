@@ -158,12 +158,16 @@ It does not automatically purge or replace them after an enrollment failure.
    ```
 
    This is local/read-only and requires root only to inspect protected files.
-   It verifies standalone format=1 provenance and the Node/Restic/rclone pins,
+   For app/config plus empty state it verifies standalone format=1 provenance and the Node/Restic/rclone pins,
    root ownership/protected ancestors,
    the original SHA-256 tree, private config, an **empty** service-owned 0700 state
    directory, no service unit/loaded service and no running service-account process.
    ANY identity, hidden/temp file, receipt, policy, lock, transaction evidence,
    symlink, integrity mismatch or nonstandard layout refuses recovery.
+   The earlier download-failure shape containing **only** an empty service-owned
+   0700 state directory is also eligible when app/config are completely absent.
+   Protected ancestors and service/process absence remain required; no unverified
+   application is admitted. See the [dependency download audit](INSTALLER_DOWNLOADS.md).
 3. Only when the Server outcome has been independently confirmed **unenrolled**,
    explicitly quarantine the eligible partial install:
 
@@ -172,7 +176,8 @@ It does not automatically purge or replace them after an enrollment failure.
    ```
 
    This is not read-only. It moves only the verified private app/config/empty
-   state into a root-owned 0700 `pluton-agent-partial.*` directory under `/var/lib`.
+   state, or just the eligible empty state directory, into a root-owned 0700
+   `pluton-agent-partial.*` directory under `/var/lib`.
    Config stays 0600. Same-filesystem renames are required and synced; cross-device
    copies refuse. No file is deleted, no source root or application data is moved,
    no server request occurs, and no service is stopped/restarted/reloaded. If a

@@ -7,7 +7,7 @@ case "$*" in
 	--help|-h)
 		printf '%s\n' 'Usage: sudo bash recover-agent-install.sh --check' \
 		  '       sudo bash recover-agent-install.sh --quarantine --confirm-unenrolled' \
-		  'Check is read-only. Quarantine preserves verified partial app/config/EMPTY state.' \
+		  'Check is read-only. Quarantine preserves verified partial app/config/EMPTY state, or legacy EMPTY state only.' \
 		  'Confirm the server did not enroll this host before quarantine/retrying. Any identity, state or unit refuses.'
 		exit 0 ;;
 	*) printf '%s\n' 'Invalid recovery arguments; no --force, token or arbitrary path is accepted.' >&2; exit 2 ;;
@@ -24,7 +24,7 @@ validate_platform
 command -v sync >/dev/null || fail 'Required utility is unavailable: sync'
 if [[ "$recovery_action" == check ]]; then
 	validate_partial_installation
-	log 'PASS verified empty-state partial first install. No writes/network/service changes. Confirm remote enrollment outcome before explicit quarantine.'
+	log "PASS eligible partial first install ($PARTIAL_INSTALL_KIND). No writes/network/service changes. Confirm remote enrollment outcome before explicit quarantine."
 else
 	quarantine_partial_installation
 fi

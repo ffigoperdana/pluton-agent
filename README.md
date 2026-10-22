@@ -70,8 +70,12 @@ app-only upgrade after drain and separate operational approval. Existing monorep
 Agents remain on their old upgrade path until a reviewed migration is available.
 An identity-less failed first installation may qualify for the separate guarded
 `recover-agent-install.sh --check` and explicit private quarantine procedure in
-the [recovery guide](docs/NETWORK_ENROLLMENT.md). Any identity/state/service
-evidence refuses; there is no force-reinstall bypass or automatic enrollment retry.
+the [recovery guide](docs/NETWORK_ENROLLMENT.md). Any identity, nonempty state or
+service evidence refuses; there is no force-reinstall bypass or automatic enrollment retry.
+Dependency GETs use bounded retry/backoff for temporary DNS/network failures;
+download/build preparation completes before final state creation. See the
+[installer download audit and recovery guide](docs/INSTALLER_DOWNLOADS.md), including
+safe recovery for older failures that left only an empty state directory.
 
 ## Developer checks
 

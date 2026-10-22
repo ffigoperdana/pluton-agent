@@ -218,13 +218,15 @@ test_checksum_mismatch_is_rejected() {
 }
 
 test_private_binary_checksum_mismatch_is_rejected() {
-	local checksum_root archive
+	local checksum_root archive dependency expected
 	checksum_root="$(make_root binary-checksum)"
-	archive="$checksum_root/restic.bz2"
-	printf 'not-the-expected-binary' > "$archive"
-	if verify_pinned_checksum "$archive" '0000000000000000000000000000000000000000000000000000000000000000'; then
-		fail 'A private binary checksum mismatch was accepted.'
-	fi
+	for dependency in restic rclone; do
+		archive="$checksum_root/$dependency.archive"
+		printf 'not-the-expected-binary' > "$archive"
+		if [[ "$dependency" == restic ]]; then expected="$RESTIC_LINUX_AMD64_SHA256"
+		else expected="$RCLONE_LINUX_AMD64_SHA256"; fi
+		if verify_pinned_checksum "$archive" "$expected"; then fail 'A private binary checksum mismatch was accepted.'; fi
+	done
 }
 
 test_uninstall_and_purge() {
@@ -341,7 +343,9 @@ test_fresh_failure_boundaries() {
 	assert_missing "$root/etc/pluton-agent.env"
 	assert_missing "$root/etc/systemd/system/pluton-agent.service"
 	assert_missing "$root/var/lib/pluton-agent/identity.json"
+	assert_missing "$root/var/lib/pluton-agent"
 	[[ -z "$(find "$root/opt" -name '.pluton-agent-stage.*' -print -quit)" ]] || fail 'Failed fresh download left staging artifacts.'
+	( INSTALL_ROOT="$root/opt/pluton-agent"; CONFIG_FILE="$root/etc/pluton-agent.env"; STATE_DIR="$root/var/lib/pluton-agent"; SYSTEMD_UNIT="$root/etc/systemd/system/pluton-agent.service"; validate_fresh_install ) || fail 'Pre-activation failure blocked a fresh attempt.'
 	root="$(make_root fresh-enrollment-failure)"
 	if PLUTON_AGENT_TEST_ENROLL_FAIL=1 base_install "$root" > "$root/failure.log" 2>&1; then fail 'Fresh enrollment failure succeeded.'; fi
 	assert_missing "$root/service-active"
@@ -396,6 +400,88 @@ test_guarded_partial_recovery() {
 	)
 }
 
+test_legacy_empty_state_recovery() {
+	local root
+	root="$(make_root empty-state-only)"
+	(
+		TEST_MODE=1; PLUTON_AGENT_TEST_ROOT="$root"; configure_paths
+		mkdir -p "$STATE_DIR"; chmod 0700 "$STATE_DIR"
+		validate_partial_installation
+		[[ "$PARTIAL_INSTALL_KIND" == empty-state-only ]] || fail 'Wrong legacy recovery classification.'
+		local evidence
+		for evidence in identity.json .enrollment-lock .enrollment.tmp policy.json command-receipt.json; do
+			printf 'preserve synthetic evidence' > "$STATE_DIR/$evidence"
+			if (validate_partial_installation) >/dev/null 2>&1; then fail 'Legacy recovery accepted nonempty state.'; fi
+			assert_file "$STATE_DIR/$evidence"; rm "$STATE_DIR/$evidence"
+		done
+		mkdir -p "$INSTALL_ROOT"
+		if (validate_partial_installation) >/dev/null 2>&1; then fail 'Legacy recovery accepted an unverified app.'; fi
+		rmdir "$INSTALL_ROOT"
+		mkdir -p "$(dirname "$CONFIG_FILE")"; printf 'unknown config' > "$CONFIG_FILE"
+		if (validate_partial_installation) >/dev/null 2>&1; then fail 'Legacy recovery accepted unknown config.'; fi
+		rm "$CONFIG_FILE"
+		ln -s "$root/nonexistent" "$INSTALL_ROOT"
+		if (validate_partial_installation) >/dev/null 2>&1; then fail 'Legacy recovery accepted a dangling install link.'; fi
+		rm "$INSTALL_ROOT"
+		touch "$root/service-active"
+		if (validate_partial_installation) >/dev/null 2>&1; then fail 'Legacy recovery accepted an active service.'; fi
+		rm "$root/service-active"
+		quarantine_partial_installation
+		assert_missing "$STATE_DIR"; assert_missing "$INSTALL_ROOT"; assert_missing "$CONFIG_FILE"
+		validate_fresh_install
+		[[ -n $(find "$root/var/lib" -path '*/pluton-agent-partial.*/state' -type d -print -quit) ]]
+	)
+}
+
+test_existing_agent_refuses_before_download_or_mutation() {
+	local root path before
+	for path in opt/pluton-agent var/lib/pluton-agent etc/pluton-agent.env etc/systemd/system/pluton-agent.service; do
+		root="$(make_root existing-refusal)"
+		mkdir -p "$(dirname "$root/$path")"
+		printf 'preserve synthetic existing Agent' > "$root/$path"
+		before="$(sha256sum "$root/$path")"
+		if (
+			TEST_MODE=0
+			INSTALL_ROOT="$root/opt/pluton-agent"; CONFIG_FILE="$root/etc/pluton-agent.env"
+			STATE_DIR="$root/var/lib/pluton-agent"; SYSTEMD_UNIT="$root/etc/systemd/system/pluton-agent.service"
+			curl() { touch "$root/side-effect"; return 99; }
+			ensure_agent_account() { touch "$root/side-effect"; }
+			assert_no_service_before_activation() { touch "$root/side-effect"; }
+			install_agent
+		) > "$root/refusal.log" 2>&1; then fail 'Existing Agent admitted by production guard.'; fi
+		[[ "$before" == "$(sha256sum "$root/$path")" ]] || fail 'Existing Agent bytes changed.'
+		assert_missing "$root/side-effect"
+		grep -F 'Fresh standalone installation only' "$root/refusal.log" >/dev/null
+	done
+}
+
+bash "$REPOSITORY_ROOT/installers/tests/dependency-download.test.sh"
+test_loaded_service_refusal() {
+	local state root
+	root="$(make_root loaded-service)"
+	for state in loaded active unknown missing-output; do
+		if (
+			TEST_MODE=0; SYSTEMD_UNIT="$root/absent-unit"
+			systemctl() {
+				case "$state" in
+					loaded) printf 'LoadState=loaded\nActiveState=inactive\nMainPID=0\n' ;;
+					active) printf 'LoadState=loaded\nActiveState=active\nMainPID=123\n' ;;
+					unknown) return 1 ;;
+					missing-output) return 4 ;;
+				esac
+			}
+			assert_no_service_before_activation
+		) >/dev/null 2>&1; then fail 'Existing/unknown loaded service admitted.'; fi
+	done
+	(
+		TEST_MODE=0; SYSTEMD_UNIT="$root/absent-unit"
+		systemctl() { printf 'LoadState=not-found\nActiveState=inactive\nMainPID=0\n'; return 4; }
+		assert_no_service_before_activation
+	)
+}
+test_loaded_service_refusal
+test_existing_agent_refuses_before_download_or_mutation
+test_legacy_empty_state_recovery
 test_guarded_partial_recovery
 test_ubuntu_platform_and_preflight
 test_fresh_failure_boundaries
