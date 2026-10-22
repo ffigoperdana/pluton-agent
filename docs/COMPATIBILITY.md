@@ -16,10 +16,12 @@ upgrade is not an OS upgrade or a monorepo migration.
 
 ## Versioned protocol
 
-This extraction preserves the 36 Agent TypeScript source files from Pluton Server
-source commit recorded in `contracts/extraction-source.json`; no runtime wire or
-security behavior changed. Package metadata now agrees with advertised Agent
-0.7.0. The server need not import this repository to run its production backend.
+The initial extraction preserved the 36 Agent TypeScript source files from the
+Pluton Server commit in `contracts/extraction-source.json`. Subsequent independent
+[HTTPS/enrollment changes](NETWORK_ENROLLMENT.md) use the explicit hash delta
+`contracts/standalone-source-v1.json`; original extraction hashes and server
+golden vectors remain unchanged. Advertised capability/wire version stays 0.7.0.
+The server need not import this repository to run its production backend.
 
 | Pairing/function                        | Status and boundary                                                                                                                             |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
