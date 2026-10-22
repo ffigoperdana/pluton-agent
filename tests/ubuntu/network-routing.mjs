@@ -11,7 +11,7 @@ import { createAgentConfig } from '../../agent/dist/config.js';
 
 assert(fs.existsSync('/opt/pluton-disposable-ubuntu-test'));
 assert.equal(process.getuid(), 0);
-assert.equal(process.version, 'v22.18.0');
+assert.equal(process.version, 'v22.23.4');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'pluton-tcp-delay-'));
 execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
   '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',

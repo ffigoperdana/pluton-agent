@@ -35,10 +35,10 @@ const lookup = (addresses: dns.LookupAddress[]): typeof dns.lookup =>
 const v4 = { address: "127.0.0.1", family: 4 };
 const v6 = { address: "::1", family: 6 };
 
-async function fixture(host = "127.0.0.1", status = 200, response = '{"success":true,"result":{}}') {
+async function fixture(host = "127.0.0.1", status = 200, response = '{"success":true,"result":{}}', certificate = cert) {
   let count = 0;
   const sockets = new Set<Duplex>();
-  const server = https.createServer({ key, cert }, (request, res) => {
+  const server = https.createServer({ key, cert: certificate }, (request, res) => {
     count++;
     request.resume();
     res.writeHead(status, { "content-type": "application/json" });
@@ -196,6 +196,51 @@ test("certificate trust and original hostname verification fail closed before PO
       await assert.rejects(new AgentTransport(config, 2000, undefined, { lookup: lookup([v4]) }).post("/api/agent/enroll", "{}"), { code: "TLS_VERIFICATION_FAILED" });
     }
     assert.equal(f.count(), 0);
+  } finally { await f.close(); }
+});
+
+test("literal IPv6 HTTPS origin verifies the IP SAN with the pinned security runtime", async () => {
+  const f = await fixture("::1");
+  try {
+    await new AgentTransport({ ...f.config, serverUrl: new URL(`https://[::1]:${f.port}`) })
+      .post("/api/agent/enroll", '{"token":"synthetic-ipv6-only"}');
+    assert.equal(f.count(), 1);
+  } finally { await f.close(); }
+});
+
+test("an expired trusted certificate is rejected before credential-bearing dispatch", async () => {
+  const csr = path.join(directory, "expired.csr");
+  const expired = path.join(directory, "expired.pem");
+  execFileSync("openssl", ["x509", "-x509toreq", "-in", path.join(directory, "cert.pem"), "-signkey", path.join(directory, "key.pem"), "-out", csr], { stdio: "ignore" });
+  execFileSync("openssl", ["x509", "-req", "-in", csr, "-signkey", path.join(directory, "key.pem"), "-days", "-1", "-out", expired], { stdio: "ignore" });
+  const f = await fixture("127.0.0.1", 200, "{}", readFileSync(expired));
+  try {
+    await assert.rejects(new AgentTransport({ ...f.config, caFile: expired }, undefined, undefined, { lookup: lookup([v4]) })
+      .post("/api/agent/enroll", '{"token":"synthetic-must-not-dispatch"}'), { code: "TLS_VERIFICATION_FAILED" });
+    assert.equal(f.count(), 0);
+  } finally { await f.close(); }
+});
+
+test("reverse-proxy HTML errors and redirects remain safe, bounded and never replay enrollment", async () => {
+  const f = await fixture();
+  let requests = 0;
+  let status = 403;
+  f.server.removeAllListeners("request");
+  f.server.on("request", (request, response) => {
+    requests++; request.resume();
+    response.writeHead(status, { server: "synthetic-reverse-proxy", "content-type": "text/html", location: "/must-not-follow?token=synthetic-response-secret" });
+    response.end("<html>synthetic-response-secret</html>");
+  });
+  try {
+    for (status of [403, 429, 502, 302, 200]) {
+      const before = requests;
+      await assert.rejects(atAgentStage("enroll", () => new AgentTransport(f.config, undefined, undefined, { lookup: lookup([v4]) })
+        .post("/api/agent/enroll", '{"token":"synthetic-request-secret"}')), (error: unknown) => {
+        assert.equal(formatAgentFailure(error), status === 200 ? "enroll failed: invalid server response." : `enroll failed: server returned HTTP ${status}.`);
+        return true;
+      });
+      assert.equal(requests, before + 1);
+    }
   } finally { await f.close(); }
 });
 

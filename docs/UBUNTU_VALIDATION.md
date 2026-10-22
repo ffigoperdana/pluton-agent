@@ -1,5 +1,9 @@
 # Ubuntu compatibility audit and validation
 
+This is the historical Ubuntu audit. Its Node 22.18.0 observations remain dated
+evidence. The current Node 22.23.4 pin and separate security-patch acceptance are
+recorded in [the runtime security patch](NODE_RUNTIME_SECURITY.md).
+
 Baseline: reviewed local `main`/`origin/main`
 `8ee7536e7cbbdab06f7a0a0f470c70d21291daf4`. This work uses only disposable
 synthetic installations. No production host, Agent, token, policy, server checkout

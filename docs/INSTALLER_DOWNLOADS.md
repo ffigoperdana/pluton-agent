@@ -1,5 +1,9 @@
 # Dependency download failures and safe fresh installation
 
+This records the earlier downloader patch against Node 22.18.0. The subsequent
+[Node 22.23.4 security patch](NODE_RUNTIME_SECURITY.md) retains the downloader's
+GET-only retry bounds and adds the reviewed Node archive SHA-256 pin.
+
 This change affects the source installer and its GET-only dependency downloader.
 Agent protocol/capability **0.7.0**, Node **22.18.0**, pnpm **10.20.0**, Restic
 **0.19.1**, rclone **1.75.1**, the frozen lockfile and existing SHA-256 pins remain

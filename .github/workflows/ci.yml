@@ -13,7 +13,7 @@ jobs:
           version: 10.20.0
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.18.0'
+          node-version: '22.23.4'
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm typecheck && pnpm build && pnpm test:contracts && pnpm validate:standalone
@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         ubuntu: ['22.04', '24.04']
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       # Agent-only build context. No production services, host mounts or privileged Docker.
@@ -33,4 +33,5 @@ jobs:
       - run: docker build --platform linux/amd64 --progress=plain --target network-routing --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} --file tests/ubuntu/Dockerfile --tag pluton-agent-routing:ci-${{ matrix.ubuntu }} .
       # Traffic control affects this disposable container's private loopback only.
       - run: docker run --rm --network none --cap-add NET_ADMIN pluton-agent-routing:ci-${{ matrix.ubuntu }}
+      - run: docker build --platform linux/amd64 --progress=plain --target runtime-upgrade --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} --file tests/ubuntu/Dockerfile --tag pluton-agent-runtime-upgrade:ci-${{ matrix.ubuntu }} .
       # This workflow validates only. No release, registry, deployment or write permissions.

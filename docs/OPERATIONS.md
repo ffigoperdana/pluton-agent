@@ -6,10 +6,10 @@ Use a new Ubuntu 22.04 x86_64 source host with systemd as its active service man
 Ubuntu 24.04 x86_64 is a validation candidate using the same clean-install steps;
 native VM acceptance is pending. Review [OS results](UBUNTU_VALIDATION.md) and the
 [native acceptance gate](NATIVE_SYSTEMD_ACCEPTANCE.md) before onboarding.
-The app-only upgrader also requires unified cgroup v2 and the standard installer
+The standalone upgrader also requires unified cgroup v2 and the standard installer
 paths. Reserve measured disk for private Node/Corepack, source compilation, app,
 backups and job workspaces. Existing upgrader minimum admission is 2 GiB plus two
-app sizes; dependency downloads/history can need more. No Docker is needed on the
+combined app/runtime sizes; dependency downloads/history can need more. No Docker is needed on the
 Agent host. Docker in this repository is only a disposable development test.
 
 Required utilities include Bash, Git, curl, CA certificates, xz/tar, bzip2, unzip,
@@ -37,8 +37,10 @@ local prerequisites only, not remote TLS or future service-user access.
 
 Pin the reviewed source commit as shown in README. The checkout and download chain
 must be trusted before running a root script. Review CI for that exact commit.
-Restic 0.19.1 and Rclone 1.75.1 have embedded SHA-256 pins; Node v22.18.0 is verified
-against its version-specific HTTPS SHASUMS256 index. This does not claim a detached
+Restic 0.19.1 and Rclone 1.75.1 have embedded SHA-256 pins; Node v22.23.4 is verified
+against its version-specific HTTPS SHASUMS256 index and embedded reviewed archive
+SHA-256. See [the runtime patch and operator checks](NODE_RUNTIME_SECURITY.md).
+This does not claim a detached
 signature check that the current installer does not implement. The application
 uses no runtime npm packages; build dependencies are frozen in the minimal lockfile.
 Pinned dependency GETs have bounded retries (4 attempts, 2/4/8-second backoff,
@@ -151,7 +153,7 @@ No additional root recovery privilege is granted by extraction or enrollment.
 
 ## Upgrade, rollback and diagnostics
 
-Use the detailed [app-only upgrade contract](AGENT_UPGRADE.md) and
+Use the detailed [standalone app/runtime upgrade contract](AGENT_UPGRADE.md) and
 [compatibility boundaries](COMPATIBILITY.md). Fetch/review the exact approved Agent
 commit, verify CI, pause server plans/Source Access requests and independently
 drain operations. Then, for a standalone installation only:
@@ -179,7 +181,7 @@ preserved without dumping subprocess output or configuration. Rollback SUCCESS
 still means upgrade failed. Preserve transaction evidence and pause jobs; do not
 delete a lock/hold, transaction, policy, receipt or backup to retry uncertain work.
 An explicitly reviewed rollback uses `sudo bash upgrade-agent.sh --rollback
-<exact-upgrade-id>` after drain. It restores recorded app/provenance, not old state.
+<exact-upgrade-id>` after drain. It restores recorded app/runtime/provenance, not old state.
 
 | Symptom                       | Safe investigation                                                                                                              |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -194,7 +196,7 @@ An explicitly reviewed rollback uses `sudo bash upgrade-agent.sh --rollback
 | Unsupported OS/architecture | Only Ubuntu 22.04/24.04 x86_64 are installer targets; derivatives, other versions and ARM64 are refused. Check actual OS results before calling 24.04 supported. |
 | Missing required utility | Install the named utility through approved Ubuntu packages; do not replace global Node/pnpm or bypass checks. |
 | systemd/cgroup preflight fails | Require native systemd and unified cgroup v2. A container adapter is test-only; do not fake the service manager or disable AppArmor. |
-| Existing state/unit/app refused | Use protected standalone app-only upgrade, or separately reviewed migration. Do not delete identity/config to obtain a fresh-install PASS. |
+| Existing state/unit/app refused | Use protected standalone upgrade, or separately reviewed migration. Do not delete identity/config to obtain a fresh-install PASS. |
 | Failed fresh installation leaves private files | Preserve residuals. [Guarded recovery](INSTALLER_DOWNLOADS.md) accepts verified app/config plus EMPTY state, or legacy EMPTY state only with app/config absent, and no service/process. Independently confirm remote unenrolled status before quarantine. Any identity/temp/receipt/policy/lock refuses. |
 | curl succeeds but Node times out | Compare explicit Node automatic/IPv4/IPv6 health probes and fixed DNS/connect/TLS/status classifications. Do not disable IPv6/TLS, force system-wide IPv4, or automatically retry a possibly consumed token. |
 | Noble source permission denial | Inspect canonical parents, account groups and narrow read/traverse ACLs. New home permissions do not justify recursive chmod/chown. |

@@ -144,7 +144,7 @@ const manifest = {
   version,
   sourceCommit,
   platform: 'linux-x64',
-  node: 'v22.18.0',
+  node: 'v22.23.4',
   pnpm: '10.20.0',
   contract: 'pluton-agent-0.7.0',
   activation:

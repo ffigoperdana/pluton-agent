@@ -55,8 +55,8 @@
     {
       "file": "agent/src/transport.test.ts",
       "extractedSha256": null,
-      "sha256": "853c3d4d9a542e943ad3f98276489ac810a5f1000567a2cf0e06f148114b2125",
-      "reason": "Exercise slow DNS across former deadlines, exact 15/30-second bounds, shared elapsed budgets, no replay or token output, verified dual-stack fallback and read-only diagnostics."
+      "sha256": "5aac09c2b79d2f82e98b698241f9fbc3a41c9ebb60696ed0ec5e695ae45ee54f",
+      "reason": "Exercise slow DNS/shared deadlines, verified IPv4/IPv6 including literal IP SANs, expired/untrusted/hostname certificate rejection, reverse-proxy errors, no enrollment replay and safe diagnostics under the pinned security runtime."
     },
     {
       "file": "agent/src/transport.ts",

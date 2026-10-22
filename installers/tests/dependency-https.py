@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="pluton-dependency-tls-") as temporary:
     thread.start()
     # These are fixture constants, never production environment overrides.
     script = '''source "$1"
-NODE_VERSION=v22.18.0
+NODE_VERSION=v22.23.4
 RESTIC_VERSION=0.19.1
 RCLONE_VERSION=1.75.1
 NODE_DIST_BASE="$2"

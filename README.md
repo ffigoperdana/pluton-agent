@@ -66,7 +66,9 @@ three sequential `network-check` probes can take about 90 seconds.
 `install-agent.sh` is **fresh-install only**. An existing installation, config or
 identity is refused; it must not silently adopt a monorepo Agent. For an already
 standalone installation use `sudo bash upgrade-agent.sh --check`, then the normal
-app-only upgrade after drain and separate operational approval. Existing monorepo
+standalone upgrade after drain and separate operational approval. The
+[Node 22.23.4 security patch](docs/NODE_RUNTIME_SECURITY.md) documents fresh versus
+existing-enrollment procedures and runtime rollback. Existing monorepo
 Agents remain on their old upgrade path until a reviewed migration is available.
 An identity-less failed first installation may qualify for the separate guarded
 `recover-agent-install.sh --check` and explicit private quarantine procedure in
@@ -79,7 +81,7 @@ safe recovery for older failures that left only an empty state directory.
 
 ## Developer checks
 
-With private/approved Node 22.18.0 and Corepack, use the exact packageManager pin:
+With private/approved Node 22.23.4 and Corepack, use the exact packageManager pin:
 
 ```sh
 corepack pnpm install --frozen-lockfile --ignore-scripts

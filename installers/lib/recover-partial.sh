@@ -45,7 +45,9 @@ validate_partial_installation() {
 	if [[ "$PARTIAL_INSTALL_KIND" == verified-app-config ]]; then
 		grep -Fx 'distribution=pluton-agent-standalone-v1' "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Recovery requires protected standalone provenance.'
 		grep -Fx 'format=1' "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial installation provenance.'
-		grep -Fx "node=$NODE_VERSION" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial Node toolchain.'
+		local partial_node
+		partial_node="$(sed -n 's/^node=//p' "$INSTALL_ROOT/.verified-install")"
+		[[ "$partial_node" == "$NODE_VERSION" || "$partial_node" == "$PREVIOUS_NODE_VERSION" ]] || fail 'Unsupported partial Node toolchain.'
 		grep -Fx "restic=$RESTIC_VERSION:$RESTIC_LINUX_AMD64_SHA256" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial Restic pin.'
 		grep -Fx "rclone=$RCLONE_VERSION:$RCLONE_LINUX_AMD64_SHA256" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Unsupported partial rclone pin.'
 		[[ -z "$(find "$INSTALL_ROOT" -mindepth 1 -maxdepth 1 ! -name app ! -name bin ! -name runtime ! -name .verified-install -print -quit)" ]] || fail 'Unexpected install state or transaction evidence; recovery refused.'

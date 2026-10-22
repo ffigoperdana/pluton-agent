@@ -1,7 +1,7 @@
 ARG UBUNTU_VERSION=22.04
 FROM ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956 AS ubuntu-22.04
 FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS ubuntu-24.04
-FROM ubuntu-${UBUNTU_VERSION} AS validation
+FROM ubuntu-${UBUNTU_VERSION} AS prerequisites
 ARG UBUNTU_VERSION
 LABEL io.pluton.test.scope="standalone-agent-ubuntu${UBUNTU_VERSION}"
 RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends \
@@ -12,6 +12,8 @@ RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends 
 ENV LOCPATH=/opt/test-locales PLUTON_REQUIRE_LOCALE_TESTS=1 PLUTON_DISPOSABLE_INSTALL_TEST=1
 WORKDIR /workspace
 COPY . .
+FROM prerequisites AS validation
+ARG UBUNTU_VERSION
 RUN touch /opt/pluton-disposable-ubuntu-test && chmod 0600 /opt/pluton-disposable-ubuntu-test \
     && find . -name '*.sh' -type f -exec chmod 0755 {} + \
     && install -m 0755 tests/ubuntu/systemctl-fixture.sh /usr/local/bin/systemctl \
@@ -44,5 +46,14 @@ USER root
 RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends iproute2 \
     && rm -rf /var/lib/apt/lists/*
 CMD ["node", "tests/ubuntu/network-routing.mjs"]
+
+# Separate prior-runtime fixture: creates its own enrolled synthetic baseline,
+# then exercises the real reviewed upgrader with an explicit manager adapter.
+FROM prerequisites AS runtime-upgrade
+ARG UBUNTU_VERSION
+RUN touch /opt/pluton-disposable-ubuntu-test && chmod 0600 /opt/pluton-disposable-ubuntu-test \
+    && find . -name '*.sh' -type f -exec chmod 0755 {} + \
+    && install -m 0755 tests/ubuntu/systemctl-fixture.sh /usr/local/bin/systemctl \
+    && bash tests/ubuntu/runtime-upgrade.sh
 
 FROM validation AS default-validation

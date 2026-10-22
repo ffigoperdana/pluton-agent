@@ -220,10 +220,11 @@ test_checksum_mismatch_is_rejected() {
 test_private_binary_checksum_mismatch_is_rejected() {
 	local checksum_root archive dependency expected
 	checksum_root="$(make_root binary-checksum)"
-	for dependency in restic rclone; do
+	for dependency in node restic rclone; do
 		archive="$checksum_root/$dependency.archive"
 		printf 'not-the-expected-binary' > "$archive"
-		if [[ "$dependency" == restic ]]; then expected="$RESTIC_LINUX_AMD64_SHA256"
+		if [[ "$dependency" == node ]]; then expected="$NODE_LINUX_AMD64_SHA256"
+		elif [[ "$dependency" == restic ]]; then expected="$RESTIC_LINUX_AMD64_SHA256"
 		else expected="$RCLONE_LINUX_AMD64_SHA256"; fi
 		if verify_pinned_checksum "$archive" "$expected"; then fail 'A private binary checksum mismatch was accepted.'; fi
 	done
@@ -269,7 +270,7 @@ test_cache_rejects_unverified_or_tampered_install() {
 			writable) chmod 0775 -- "$root/opt/pluton-agent/runtime/bin" ;;
 			symlink) ln -s /etc/passwd "$root/opt/pluton-agent/app/external" ;;
 			unhashed-link) printf 'unverified\n' > "$root/opt/pluton-agent/unverified"; ln -s ../unverified "$root/opt/pluton-agent/app/unhashed" ;;
-			version) sed -i 's/node=v22.18.0/node=v99.0.0/' "$root/opt/pluton-agent/.verified-install" ;;
+			version) sed -i 's/node=v22.23.4/node=v99.0.0/' "$root/opt/pluton-agent/.verified-install" ;;
 		esac
 		output="$(base_install "$root")"
 		[[ "$output" == *'No reusable verified installation'* ]] || fail "Unsafe $mode cache was reused."

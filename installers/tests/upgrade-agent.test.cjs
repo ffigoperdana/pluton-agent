@@ -175,6 +175,77 @@ test("upgrade builds before stopping, atomically replaces only app and preserves
     true,
   );
 });
+
+function runtimeFixture(t) {
+  const f = fixture(t);
+  f.c.runtime = path.join(f.c.install, "runtime");
+  f.c.runtimeChange = true;
+  f.c.node = path.join(f.c.runtime, "bin/node");
+  function makeRuntime(root, version) {
+    fs.mkdirSync(path.join(root, "bin"), { recursive: true, mode: 0o755 });
+    fs.mkdirSync(path.join(root, "lib"), { mode: 0o755 });
+    fs.writeFileSync(path.join(root, "bin/node"), version, { mode: 0o755 });
+    fs.writeFileSync(path.join(root, "lib/tool.js"), "synthetic bundled tool", { mode: 0o644 });
+    fs.symlinkSync("../lib/tool.js", path.join(root, "bin/tool"));
+  }
+  makeRuntime(f.c.runtime, "old runtime");
+  const build = f.c.build;
+  f.c.build = (id, next) => { build(id, next); makeRuntime(path.join(f.c.install, `.next-runtime-${id}`), "patched runtime"); };
+  const oldDigest = require("../lib/upgrade-runtime.cjs").digest(f.c.runtime, f.c);
+  return { ...f, oldDigest, runtime: () => fs.readFileSync(f.c.node, "utf8") };
+}
+
+test("runtime patch stages before stop and preserves identity/config/policy; explicit rollback restores both verified trees", (t) => {
+  const f = runtimeFixture(t);
+  const result = upgrade.upgrade(f.c);
+  assert.equal(f.runtime(), "patched runtime");
+  assert.equal(f.app(), "new app");
+  f.assertPreserved();
+  assert.equal(fs.existsSync(f.c.hold), false);
+  upgrade.rollback(f.c, result.id);
+  assert.equal(f.runtime(), "old runtime");
+  assert.equal(f.app(), "old app");
+  f.assertPreserved();
+});
+
+for (const phase of ["prepared", "old-moved", "runtime-old-moved", "runtime-activated", "activated"]) {
+  test(`runtime interruption ${phase} retains authenticated anchor and restores without reenrollment`, (t) => {
+    const f = runtimeFixture(t);
+    f.c.checkpoint = (point) => { if (point === phase) throw Object.assign(new Error("runtime interruption"), { interrupted: true }); };
+    assert.throws(() => upgrade.upgrade(f.c), /runtime interruption/);
+    assert.equal(fs.readFileSync(path.join(f.c.hold, "node"), "utf8"), "old runtime");
+    assert.equal(fs.statSync(path.join(f.c.hold, "node")).mode & 0o777, 0o500);
+    upgrade.rollback(f.c, f.retained()[0]);
+    assert.equal(f.runtime(), "old runtime");
+    assert.equal(f.app(), "old app");
+    f.assertPreserved();
+  });
+}
+test("runtime health failure rolls back both trees; corrupt runtime backup refuses rollback and retains hold", (t) => {
+  const f = runtimeFixture(t);
+  let health = 0;
+  f.c.service.health = () => { if (++health === 1) throw new Error("synthetic health failure"); };
+  assert.throws(() => upgrade.upgrade(f.c), /failed safely/);
+  assert.equal(f.runtime(), "old runtime"); f.assertPreserved();
+  const other = runtimeFixture(t);
+  const { id } = upgrade.upgrade(other.c);
+  fs.appendFileSync(path.join(other.c.backups, id, "runtime/bin/node"), "corrupt");
+  assert.throws(() => upgrade.rollback(other.c, id));
+  assert.equal(other.runtime(), "patched runtime");
+  assert.equal(fs.existsSync(other.c.hold), true);
+  other.assertPreserved();
+});
+test("runtime links escaping the private tree refuse before Stop; a build failure keeps the installed runtime", (t) => {
+  const f = runtimeFixture(t);
+  const build = f.c.build;
+  f.c.build = (id, next) => { build(id, next); fs.symlinkSync(f.c.config, path.join(f.c.install, `.next-runtime-${id}/outside`)); };
+  assert.throws(() => upgrade.upgrade(f.c));
+  assert(!f.calls.includes("stop")); assert.equal(f.runtime(), "old runtime"); f.assertPreserved();
+  const other = runtimeFixture(t);
+  other.c.build = () => { throw new Error("synthetic download failure"); };
+  assert.throws(() => upgrade.upgrade(other.c));
+  assert(!other.calls.includes("stop")); assert.equal(other.runtime(), "old runtime"); other.assertPreserved();
+});
 test("active Agent fence refuses without stopping a service or applying a command", (t) => {
   const f = fixture(t),
     activity = path.join(f.c.state, "source-access-activity.json");

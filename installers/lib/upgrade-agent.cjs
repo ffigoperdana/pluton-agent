@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
+const runtime = require("./upgrade-runtime.cjs");
 const {
   GuardFailure,
   commandFailure,
@@ -309,7 +310,7 @@ function validateDisk(available, appKiB) {
       Number.isFinite(appKiB) &&
       appKiB > 0 &&
       available >= 2 * appKiB + 2 * 1024 * 1024,
-    "Insufficient free disk: preserve at least 2 GiB plus two app copies on each staging/backup filesystem.",
+    "Insufficient free disk: preserve at least 2 GiB plus two app/runtime copies on each staging/backup filesystem.",
   );
 }
 function syncFile(file) {
@@ -354,7 +355,7 @@ function syncTree(directory, sync, buildRoot) {
       // Build scratch deliberately links the private runtime. Persist the link
       // entry via its parent below; never open, traverse or sync its target.
       requireSafe(
-        buildRoot && file.startsWith(buildRoot + path.sep),
+        (Array.isArray(buildRoot) ? buildRoot : [buildRoot]).some((root) => root && file.startsWith(root + path.sep)),
         "Symlink outside build scratch refused during synchronization.",
         "SYNC_ENTRY_UNSAFE",
       );
@@ -417,6 +418,7 @@ function upgrade(c) {
       hash(fs.readFileSync(c.node)),
       c.sync,
     );
+    if (c.runtimeChange) runtime.anchor(c, syncFile);
     fs.mkdirSync(c.backups, { recursive: true, mode: 0o700 });
     requireSafe(
       !c.enforceModes || (fs.statSync(c.backups).mode & 0o777) === 0o700,
@@ -425,12 +427,13 @@ function upgrade(c) {
     fs.mkdirSync(path.join(c.backups, id), { mode: 0o700 });
     c.sync(c.backups);
     const receipt = {
-      version: 1,
+      version: c.runtimeChange ? 2 : 1,
       id,
       commit: c.commit,
       phase: "building",
       binding: identityBinding(c.state).digest,
       previous: treeDigest(c.app, c.owner, c.enforceModes),
+      runtime: runtime.record(c),
     };
     save(c, receipt);
     return receipt;
@@ -461,6 +464,7 @@ function upgrade(c) {
       "Build did not produce a complete application.",
     );
     c.verifyCandidate(next);
+    runtime.candidate(c, r, syncTree);
     syncTree(next, c.sync);
     r.candidate = treeDigest(next, c.owner, c.enforceModes);
     requireSafe(
@@ -470,6 +474,7 @@ function upgrade(c) {
     // Check again after the potentially long dependency/build step.
     stage = "POST_BUILD_PREFLIGHT";
     c.preflight();
+    runtime.unchanged(c, r);
     assertLocallyDrained(c);
     requireSafe(
       fs.readFileSync(path.join(c.state, ACTIVITY), "utf8") === fence,
@@ -501,6 +506,7 @@ function upgrade(c) {
     );
     stage = "COPY_APP";
     copyAppFiles(c.app, path.join(c.backups, id, "app"), c);
+    runtime.backup(c, r, syncTree);
     stage = "SYNC_APP";
     syncTree(path.join(c.backups, id, "app"), c.sync);
     stage = "COPY_PROTECTED_FILES";
@@ -520,7 +526,7 @@ function upgrade(c) {
     syncTree(
       path.join(c.backups, id),
       c.sync,
-      path.join(c.backups, id, "build"),
+      r.runtime ? [path.join(c.backups, id, "build"), path.join(c.backups, id, "runtime")] : path.join(c.backups, id, "build"),
     );
     r.phase = "prepared";
     stage = "RECEIPT_WRITE";
@@ -541,6 +547,7 @@ function upgrade(c) {
     r.phase = "activated";
     stage = "RECEIPT_WRITE";
     save(c, r);
+    runtime.activate(c, r);
     stage = "PROVENANCE";
     c.writeProvenance(id);
     stage = "ACTIVATED_CHECKPOINT";
@@ -562,6 +569,7 @@ function upgrade(c) {
       "STATE_PRESERVATION_MISMATCH",
     );
     stage = "POST_HEALTH_ARTIFACT_CHECK";
+    runtime.healthy(c, r);
     requireSafe(
       treeDigest(c.app, c.owner, c.enforceModes) === r.candidate,
       "Health check changed protected state/artifacts.",
@@ -596,6 +604,7 @@ function upgrade(c) {
     let rollbackStage = "ROLLBACK_DRAIN";
     const needsRollback = Boolean(stopped && r.preserved);
     try {
+      if (!stopped) runtime.unchanged(c, r);
       requireSafe(
         fence || !exists(path.join(c.state, ACTIVITY)),
         "Uncertain/foreign activity fence retained for review.",
@@ -671,16 +680,27 @@ function recordFailure(c, r, failure) {
 }
 function releaseHold(c, id) {
   requireSafe(
+    exists(path.join(c.hold, "node")) === (JSON.parse(fs.readFileSync(path.join(c.backups, id, "receipt.json"), "utf8")).version === 2),
+    "Runtime recovery anchor is missing or unexpected.",
+  );
+  requireSafe(
     JSON.parse(fs.readFileSync(path.join(c.hold, "owner.json"), "utf8")).id ===
       id,
     "Upgrade lock ownership mismatch.",
   );
   requireSafe(
     JSON.stringify(fs.readdirSync(c.hold).sort()) ===
-      JSON.stringify(["node.sha256", "owner.json"]),
+      JSON.stringify(exists(path.join(c.hold, "node")) ? ["node", "node.sha256", "owner.json"] : ["node.sha256", "owner.json"]),
     "Unknown files in upgrade hold; no cleanup performed.",
   );
   // Remove only this process's known lock files. Unknown files prevent rmdir.
+  const hadAnchor = exists(path.join(c.hold, "node"));
+  if (hadAnchor) {
+    const anchorStat = fs.lstatSync(path.join(c.hold, "node"));
+    requireSafe(anchorStat.isFile() && !anchorStat.isSymbolicLink() && anchorStat.uid === c.owner && anchorStat.nlink === 1 && (anchorStat.mode & 0o777) === 0o500, "Recovery runtime is not protected.");
+    requireSafe(hash(fs.readFileSync(path.join(c.hold, "node"))) === fs.readFileSync(path.join(c.hold, "node.sha256"), "utf8"), "Recovery runtime integrity mismatch.");
+    fs.unlinkSync(path.join(c.hold, "node"));
+  }
   fs.unlinkSync(path.join(c.hold, "node.sha256"));
   fs.unlinkSync(path.join(c.hold, "owner.json"));
   fs.rmdirSync(c.hold);
@@ -698,10 +718,12 @@ function releaseHold(c, id) {
       hash(fs.readFileSync(c.node)),
       c.sync,
     );
+    if (hadAnchor) runtime.anchor(c, syncFile);
     throw error;
   }
 }
 function restorePrevious(c, r) {
+  runtime.assertRollback(c, r);
   const previous = path.join(c.install, `.previous-${r.id}`);
   const backup = path.join(c.backups, r.id, "app");
   requireSafe(
@@ -711,6 +733,7 @@ function restorePrevious(c, r) {
   if (exists(c.app)) {
     const digest = treeDigest(c.app, c.owner, c.enforceModes);
     if (digest === r.previous) {
+      runtime.restore(c, r, syncTree);
       durableWrite(
         c.provenance,
         fs.readFileSync(path.join(c.backups, r.id, "verified-install")),
@@ -736,6 +759,7 @@ function restorePrevious(c, r) {
     fs.renameSync(previous, c.app);
     c.sync(c.install);
   } else copyApp(backup, c.app, c);
+  runtime.restore(c, r, syncTree);
   durableWrite(
     c.provenance,
     fs.readFileSync(path.join(c.backups, r.id, "verified-install")),
@@ -749,7 +773,7 @@ function rollback(c, id) {
   c.verifyReceipt(receiptFile);
   const r = JSON.parse(fs.readFileSync(receiptFile, "utf8"));
   requireSafe(
-    r.version === 1 &&
+    ((r.version === 1 && !r.runtime) || (r.version === 2 && r.runtime)) &&
       r.id === id &&
       /^[a-f0-9]{64}$/.test(r.previous || "") &&
       r.binding === identityBinding(c.state).digest,
@@ -783,6 +807,7 @@ function rollback(c, id) {
       hash(fs.readFileSync(c.node)),
       c.sync,
     );
+    if (r.runtime) runtime.anchor(c, syncFile);
   }
   let token;
   const activity = path.join(c.state, ACTIVITY);
@@ -794,6 +819,7 @@ function rollback(c, id) {
     );
   } else token = acquireActivity(c, id);
   if (r.phase === "building" || r.phase === "drained") {
+    runtime.unchanged(c, r);
     requireSafe(
       treeDigest(c.app, c.owner, c.enforceModes) === r.previous,
       "Application changed before replacement; operator review required.",
@@ -894,6 +920,12 @@ function productionContext(repository) {
     },
   };
   c.app = path.join(c.install, "app");
+  c.runtime = path.join(c.install, "runtime");
+  const installedProvenance = fs.readFileSync(path.join(c.install, ".verified-install"), "utf8");
+  requireSafe(/^format=1$/m.test(installedProvenance) && /^distribution=pluton-agent-standalone-v1$/m.test(installedProvenance), "Only protected standalone provenance is eligible; monorepo migration requires separate review.");
+  const installedNode = /^node=(.+)$/m.exec(installedProvenance)?.[1];
+  requireSafe(runtime.SUPPORTED_NODES.has(installedNode), "Unsupported private Node toolchain; separate review is required.");
+  c.runtimeChange = installedNode !== runtime.TARGET_NODE;
   c.hold = path.join(c.install, HOLD);
   c.provenance = path.join(c.install, ".verified-install");
   const git = (args) =>
@@ -1152,7 +1184,8 @@ function productionContext(repository) {
         "Running Agent lacks upgrade protocol v1; safely drain and stop it first.",
       );
     } else c.service.assertEmpty();
-    const size = Number(run("/usr/bin/du", ["-sk", c.app]).split(/\s+/)[0]);
+    const size = Number(run("/usr/bin/du", ["-sk", c.app]).split(/\s+/)[0]) +
+      Number(run("/usr/bin/du", ["-sk", c.runtime]).split(/\s+/)[0]);
     for (const base of [
       c.install,
       exists(c.backups) ? c.backups : "/var/lib",
@@ -1176,9 +1209,10 @@ function productionContext(repository) {
     git(["archive", "--format=tar", `--output=${archive}`, c.commit]);
     fs.mkdirSync(snapshot);
     fs.mkdirSync(stage);
+    fs.mkdirSync(path.join(stage, ".work"), { mode: 0o700 });
     fs.mkdirSync(path.join(work, "tmp"));
     run("/usr/bin/tar", ["-xf", archive, "-C", snapshot]);
-    fs.symlinkSync(
+    if (!c.runtimeChange) fs.symlinkSync(
       path.join(c.install, "runtime"),
       path.join(stage, "runtime"),
     );
@@ -1190,7 +1224,7 @@ function productionContext(repository) {
       "Exact pinned pnpm is required.",
     );
     const buildScript =
-      'source "$1/installers/install-agent.sh"; REPOSITORY_ROOT="$1"; STAGE_ROOT="$2"; export PATH="$2/runtime/bin:$PATH"; build_agent_app_from_source; source_fingerprint > "$3/source.sha256"';
+      'source "$1/installers/install-agent.sh"; REPOSITORY_ROOT="$1"; STAGE_ROOT="$2"; if [[ "$4" == true ]]; then prepare_private_node_runtime; chown -R root:root -- "$2/runtime"; chmod -R a+rX,u+w,go-w -- "$2/runtime"; printf "%s\\n" "$NODE_ARCHIVE_SHA256" > "$3/node-archive.sha256"; fi; export PATH="$2/runtime/bin:$PATH"; build_agent_app_from_source; source_fingerprint > "$3/source.sha256"';
     run(
       "/usr/bin/bash",
       [
@@ -1202,6 +1236,7 @@ function productionContext(repository) {
         snapshot,
         stage,
         work,
+        String(c.runtimeChange),
       ],
       {
         env: { ...cleanEnv, TMPDIR: path.join(work, "tmp") },
@@ -1212,6 +1247,7 @@ function productionContext(repository) {
     // /var/lib and /opt may be different filesystems. Copy and fsync the new app
     // first; only final activation uses same-filesystem atomic renames.
     copyApp(path.join(stage, "app"), next, c);
+    if (c.runtimeChange) runtime.copy(path.join(stage, "runtime"), path.join(c.install, `.next-runtime-${id}`), c, syncTree);
     c.sync(c.install);
   };
   c.verifyCandidate = (app) => {
@@ -1228,7 +1264,7 @@ function productionContext(repository) {
         "-u",
         "pluton-agent",
         "--",
-        c.node,
+        c.runtimeChange ? path.join(c.install, path.basename(app).replace(".next-", ".next-runtime-"), "bin/node") : c.node,
         path.join(app, "dist/index.js"),
         "--upgrade-info",
       ]) ===
@@ -1254,6 +1290,7 @@ function productionContext(repository) {
       path.join(c.backups, id, "verified-install"),
       "utf8",
     );
+    if (c.runtimeChange) requireSafe(fs.readFileSync(path.join(c.backups, id, "build/node-archive.sha256"), "utf8").trim() === runtime.ARCHIVE_SHA256, "Candidate runtime archive differs from the reviewed pin.");
     requireSafe(
       /^source=.+$/m.test(metadata) && /^tree=[a-f0-9]{64}$/m.test(metadata),
       "Malformed prior install provenance.",
@@ -1262,7 +1299,9 @@ function productionContext(repository) {
       c.provenance,
       metadata
         .replace(/^source=.+$/m, `source=${sourceHash}`)
-        .replace(/^tree=.+$/m, `tree=${digest}`),
+        .replace(/^tree=.+$/m, `tree=${digest}`)
+        .replace(/^node=.+$/m, `node=${runtime.TARGET_NODE}`)
+        .replace(/^node_archive=.+$/m, (original) => c.runtimeChange ? `node_archive=${fs.readFileSync(path.join(c.backups, id, "build/node-archive.sha256"), "utf8").trim()}` : original),
       c.sync,
       0o644,
     );
@@ -1302,7 +1341,7 @@ if (require.main === module) {
           ? atStage("MANUAL_ROLLBACK", () => rollback(c, id))
           : upgrade(c);
       console.log(
-        `Agent app transaction ${result.phase}. Upgrade ID: ${result.id}. Source commit: ${c.commit}. Rollback artifacts retained privately.`,
+        `Agent transaction ${result.phase}. Upgrade ID: ${result.id}. Source commit: ${c.commit}. Rollback artifacts retained privately.`,
       );
     }
   } catch (error) {

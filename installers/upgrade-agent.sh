@@ -10,11 +10,12 @@ upgrade_usage() {
 Usage: sudo bash installers/upgrade-agent.sh [--check | --rollback <upgrade-id>]
 
 Default: build the checked-out committed Agent using the installed private
-Node/Corepack and pinned pnpm, drain locally, back up, replace only app, and
+Node/Corepack and pinned pnpm, drain locally, back up, replace app and the
+reviewed private Node runtime when required, and
 restart only pluton-agent.service. No enrollment or configuration writes.
 
 --check       Read-only local preflight; no download, build, heartbeat or restart.
---rollback ID Restore only the recorded previous app after a fresh drain and
+--rollback ID Restore the recorded previous app/runtime after a fresh drain and
               exact preserved-state check. Never restore old identity/receipts.
 --help        Show this help.
 
@@ -64,25 +65,36 @@ if [[ "${1:-}" == --rollback && -d "$INSTALL_ROOT/.upgrade-lock" ]]; then
 	# A killed transaction can leave app temporarily absent. Authenticate the same
 	# private Node without requiring that incomplete application tree to match.
 	upgrade_node_receipt="$INSTALL_ROOT/.upgrade-lock/node.sha256"
+	upgrade_bootstrap_node="$RUNTIME_DIR/bin/node"
+	if [[ -e "$INSTALL_ROOT/.upgrade-lock/node" || -L "$INSTALL_ROOT/.upgrade-lock/node" ]]; then
+		upgrade_bootstrap_node="$INSTALL_ROOT/.upgrade-lock/node"
+		[[ -f "$upgrade_bootstrap_node" && ! -L "$upgrade_bootstrap_node" && "$(stat -c '%u:%a' "$upgrade_bootstrap_node")" == '0:500' ]] || fail 'Interrupted runtime anchor is not protected.'
+	fi
 	[[ ! -L "$INSTALL_ROOT/.upgrade-lock" && "$(stat -c '%u:%a' "$INSTALL_ROOT/.upgrade-lock")" == '0:700' &&
 	   -f "$upgrade_node_receipt" && ! -L "$upgrade_node_receipt" && "$(stat -c '%u:%a' "$upgrade_node_receipt")" == '0:600' &&
-	   ! -L "$RUNTIME_DIR/bin/node" && "$(stat -c '%u' "$RUNTIME_DIR/bin/node")" == 0 ]] || fail 'Interrupted upgrade lacks protected runtime evidence.'
-	upgrade_mode="$(stat -c '%a' "$RUNTIME_DIR/bin/node")"
-	(( (8#$upgrade_mode & 0022) == 0 )) && [[ "$(stat -c '%h' "$RUNTIME_DIR/bin/node")" == 1 ]] || fail 'Recovery executable is writable or hard-linked.'
-	for upgrade_runtime_parent in "$RUNTIME_DIR" "$RUNTIME_DIR/bin"; do
+	   ! -L "$upgrade_bootstrap_node" && "$(stat -c '%u' "$upgrade_bootstrap_node")" == 0 ]] || fail 'Interrupted upgrade lacks protected runtime evidence.'
+	upgrade_mode="$(stat -c '%a' "$upgrade_bootstrap_node")"
+	(( (8#$upgrade_mode & 0022) == 0 )) && [[ "$(stat -c '%h' "$upgrade_bootstrap_node")" == 1 ]] || fail 'Recovery executable is writable or hard-linked.'
+	for upgrade_runtime_parent in "$(dirname "$upgrade_bootstrap_node")" "$(dirname "$(dirname "$upgrade_bootstrap_node")")"; do
 		[[ ! -L "$upgrade_runtime_parent" && "$(stat -c '%u' "$upgrade_runtime_parent")" == 0 ]] || fail 'Recovery runtime ancestor is not protected.'
 		upgrade_mode="$(stat -c '%a' "$upgrade_runtime_parent")"
 		(( (8#$upgrade_mode & 0022) == 0 )) || fail 'Recovery runtime ancestor is writable by another account.'
 	done
 	upgrade_node_hash="$(cat "$upgrade_node_receipt")"
-	[[ "$upgrade_node_hash" =~ ^[a-f0-9]{64}$ && "$(sha256sum "$RUNTIME_DIR/bin/node" | cut -d ' ' -f 1)" == "$upgrade_node_hash" ]] || fail 'Recovery runtime integrity mismatch.'
+	[[ "$upgrade_node_hash" =~ ^[a-f0-9]{64}$ && "$(sha256sum "$upgrade_bootstrap_node" | cut -d ' ' -f 1)" == "$upgrade_node_hash" ]] || fail 'Recovery runtime integrity mismatch.'
 else
+	upgrade_bootstrap_node="$RUNTIME_DIR/bin/node"
 	upgrade_tree="$(verified_tree_digest "$INSTALL_ROOT")" || fail 'Existing artifacts failed ownership/integrity checks; use the exact interrupted transaction rollback if applicable.'
 	grep -Fx "tree=$upgrade_tree" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Installed artifacts differ from their recorded integrity digest.'
 fi
-grep -Fx "node=$NODE_VERSION" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Private Node version differs from the supported installer build contract.'
+upgrade_installed_node="$(sed -n 's/^node=//p' "$INSTALL_ROOT/.verified-install")"
+[[ "$upgrade_installed_node" == "$NODE_VERSION" || "$upgrade_installed_node" == "$PREVIOUS_NODE_VERSION" ]] || fail 'Unsupported private Node version requires separate review.'
 grep -Fx "restic=$RESTIC_VERSION:$RESTIC_LINUX_AMD64_SHA256" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Private Restic differs from the supported build contract.'
 grep -Fx "rclone=$RCLONE_VERSION:$RCLONE_LINUX_AMD64_SHA256" "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'Private Rclone differs from the supported build contract.'
-[[ "$("$RUNTIME_DIR/bin/node" -v)" == "$NODE_VERSION" ]] || fail 'Private Node could not be verified.'
-[[ -f "$RUNTIME_DIR/lib/node_modules/corepack/dist/corepack.js" ]] || fail 'Private Corepack is missing.'
-exec "$RUNTIME_DIR/bin/node" "$UPGRADE_SCRIPT_DIR/lib/upgrade-agent.cjs" "$REPOSITORY_ROOT" "$@"
+upgrade_bootstrap_version="$("$upgrade_bootstrap_node" -v)"
+[[ "$upgrade_bootstrap_version" == "$NODE_VERSION" || "$upgrade_bootstrap_version" == "$PREVIOUS_NODE_VERSION" ]] || fail 'Private Node could not be verified.'
+if [[ "$upgrade_bootstrap_node" == "$RUNTIME_DIR/bin/node" ]]; then
+	[[ "$upgrade_bootstrap_version" == "$upgrade_installed_node" ]] || fail 'Private runtime version differs from its verified provenance.'
+	[[ -f "$RUNTIME_DIR/lib/node_modules/corepack/dist/corepack.js" ]] || fail 'Private Corepack is missing.'
+fi
+exec "$upgrade_bootstrap_node" "$UPGRADE_SCRIPT_DIR/lib/upgrade-agent.cjs" "$REPOSITORY_ROOT" "$@"
