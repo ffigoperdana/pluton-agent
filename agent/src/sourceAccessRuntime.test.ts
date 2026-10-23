@@ -35,6 +35,7 @@ linux(
       success: boolean;
       result?: {
         sourceAccess?: { effectiveVersion: number; effectiveRoots: string[] };
+        validation?: { status: string }[];
       };
     }[] = [];
     let command: AgentCommandEnvelope | undefined;
@@ -49,7 +50,7 @@ linux(
         res.end(
           JSON.stringify({
             success: true,
-            result: req.url === "/api/agent/poll" ? { command } : {},
+            ...(req.url === "/api/agent/poll" ? { result: { command: command ?? null } } : req.url === "/api/agent/heartbeat" ? { result: {} } : {}),
           }),
         );
       });
@@ -79,7 +80,7 @@ linux(
       expectedHostPolicyRevision: initial.hostPolicyRevision,
       roots: [] as string[],
     };
-    const setCommand = (id: string, body = payload) => {
+    const setCommand = (id: string, body = payload, type: AgentCommandEnvelope["type"] = "SOURCE_ACCESS_APPLY") => {
       const leaseExpiresAt = new Date(Date.now() + 60_000).toISOString();
       const signatureTimestamp = Date.now().toString(),
         leaseToken = "lease-token-for-source-policy-0001";
@@ -87,7 +88,7 @@ linux(
         "command",
         signatureTimestamp,
         id,
-        "SOURCE_ACCESS_APPLY",
+        type,
         JSON.stringify(body),
         id,
         leaseToken,
@@ -95,7 +96,7 @@ linux(
       ].join("\n");
       command = {
         id,
-        type: "SOURCE_ACCESS_APPLY",
+        type,
         payload: body,
         idempotencyKey: id,
         leaseExpiresAt,
@@ -123,6 +124,15 @@ linux(
     });
     await runOnce(config);
     assert.equal(completions[2].success, false);
+    // Real validation over void ACK/event/complete responses never grants access.
+    setCommand("validation_0001", { ...payload, requestId: "validation_request_0001", expectedVersion: 1, roots: [source] }, "SOURCE_ACCESS_VALIDATE");
+    await runOnce(config);
+    assert.equal(completions[3].success, true);
+    assert.equal(completions[3].result?.validation?.[0].status, "approved");
+    assert.deepEqual(completions[3].result?.sourceAccess?.effectiveRoots, []);
+    setCommand("validation_0002", { ...payload, requestId: "validation_request_0002", roots: [source] }, "SOURCE_ACCESS_VALIDATE");
+    await runOnce(config);
+    assert.equal(completions[4].success, false); // stale policy version is not authority
     const final = await new SourceAccessPolicy({
       config,
       agentId: "agent-01",

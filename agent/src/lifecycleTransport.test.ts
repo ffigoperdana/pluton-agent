@@ -131,7 +131,7 @@ executionTest(
       else if (request.url?.endsWith("/complete")) completions.push(body);
       else if (request.url?.endsWith("/events")) events.push(body.event);
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ success: true, result }));
+      response.end(JSON.stringify(request.url === "/api/agent/heartbeat" || request.url === "/api/agent/poll" || request.url?.endsWith("/status") ? { success: true, result } : { success: true }));
     });
     await new Promise<void>((resolve) =>
       server.listen(0, "127.0.0.1", resolve),
