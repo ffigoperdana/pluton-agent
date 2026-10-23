@@ -7,8 +7,8 @@
     {
       "file": "agent/src/client.ts",
       "extractedSha256": "66e359bb356c5662c436e768e5bc19703ed2c50e08b996c536f6dcd63d536e58",
-      "sha256": "91da3a8f31b09a44316ddac1e9c20439cfdb07e98e1dff930f76fcecd98ad2d3",
-      "reason": "Validate response envelopes and classify enrollment rejection without exposing arbitrary server bodies; wire payloads remain unchanged."
+      "sha256": "55fec87087c67ba029ca3462c30bf9999ecd2b90882736cb7888088ae91bedc0",
+      "reason": "Endpoint-aware void/result validation for the documented server ACK, event and completion schemas; strict enrollment, poll envelope and status fields; no request retries or authorization changes."
     },
     {
       "file": "agent/src/enrollmentState.test.ts",
@@ -63,6 +63,24 @@
       "extractedSha256": "176017fee31bfd0138e743f1957e54a7011a34a7040ddbae59b9174ba32d1ebc",
       "sha256": "15ce3670fd88dac363ca65262d1171de54047a95565abd02904e8e25ac776b55",
       "reason": "Select one verified connection before HTTP dispatch, enforce a 30-second total DNS/connect/response budget and origin boundaries without automatic request replay."
+    },
+    {
+      "file": "agent/src/client.test.ts",
+      "extractedSha256": null,
+      "sha256": "f34e69ab259238e0fee24cdf83d3086ef0ee9f8bb8b9eb8c8370883e08795cef",
+      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries."
+    },
+    {
+      "file": "agent/src/lifecycleTransport.test.ts",
+      "extractedSha256": "9ebdc7b2b723df22da05ce85a3a7e066a6e6556731cc857fc856d4f9c4f2e20f",
+      "sha256": "d2c6744d85eb6ff0f4d152d8644a4c001ae3966409dcb57494b23c5843209be1",
+      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries."
+    },
+    {
+      "file": "agent/src/sourceAccessRuntime.test.ts",
+      "extractedSha256": "0836c212459b018515ecd229fc730fb58a9f114e6fe892273a0d64043ee0ec7e",
+      "sha256": "4619095d2a63bbe03fea718e949b187b95202db86a95f03684634f261040364a",
+      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries."
     }
   ]
 }

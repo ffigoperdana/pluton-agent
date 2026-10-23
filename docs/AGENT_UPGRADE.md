@@ -444,3 +444,12 @@ not run here. Publish manually, review the exact commit's Linux CI, then approve
 any controlled retry separately after normal pause/drain and read-only preflight.
 No production host, existing Agent, historical receipt, enrollment or policy was
 accessed or modified by this follow-up.
+
+## Signed ACK compatibility and queued work
+
+Before upgrading an ACK-affected 0.7.0 installation, use the
+[endpoint contract and per-device recovery runbook](ACK_COMPATIBILITY.md).
+It distinguishes an unexecuted ACK failure from uncertain backup completion,
+and a cancellable backup from a delivered Source Access validation that the
+Server currently refuses to cancel. The normal drain/hold, provenance, identity,
+policy and rollback checks remain mandatory; no reinstall or receipt reset.

@@ -10,7 +10,30 @@ import type {
   StoredAgentIdentity,
 } from "./types.js";
 
-type ApiResponse<T> = { success: boolean; result: T; error?: string };
+function object(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function success(value: unknown, rejection: "REQUEST_REJECTED" | "ENROLLMENT_REJECTED"): Record<string, unknown> {
+  if (!object(value) || typeof value.success !== "boolean") throw new AgentNetworkError("INVALID_RESPONSE");
+  if (!value.success) throw new AgentNetworkError(rejection);
+  return value;
+}
+
+function resultObject(value: unknown): Record<string, unknown> {
+  if (!object(value)) throw new AgentNetworkError("INVALID_RESPONSE");
+  return value;
+}
+
+function commandEnvelope(value: unknown): value is AgentCommandEnvelope {
+  if (!object(value) || !object(value.payload)) return false;
+  for (const field of ["id", "type", "idempotencyKey", "leaseToken", "signatureTimestamp", "signature"]) {
+    if (typeof value[field] !== "string" || !value[field] || value[field].length > 4096) return false;
+  }
+  return typeof value.leaseExpiresAt === "string" && Number.isFinite(Date.parse(value.leaseExpiresAt)) &&
+    /^[A-Za-z0-9_-]{32,128}$/.test(value.leaseToken as string) &&
+    /^\d+$/.test(value.signatureTimestamp as string);
+}
 
 export class AgentClient {
   private readonly transport: AgentTransport;
@@ -44,14 +67,13 @@ export class AgentClient {
   }
 
   async heartbeat(inventory: AgentInventory): Promise<void> {
-    await this.postSigned("/api/agent/heartbeat", inventory);
+    resultObject(await this.postSigned("/api/agent/heartbeat", inventory, "result"));
   }
 
   async poll(): Promise<AgentCommandEnvelope | null> {
-    const result = await this.postSigned<{
-      command: AgentCommandEnvelope | null;
-    }>("/api/agent/poll", {});
-    if (!result.command) return null;
+    const result = resultObject(await this.postSigned("/api/agent/poll", {}, "result"));
+    if (result.command === null) return null;
+    if (!commandEnvelope(result.command)) throw new AgentNetworkError("INVALID_RESPONSE");
     if (!this.identity) {
       throw new AgentOperationError(
         "verify-command",
@@ -72,6 +94,7 @@ export class AgentClient {
     await this.postSigned(
       `/api/agent/commands/${encodeURIComponent(commandId)}/ack`,
       { leaseToken },
+      "void",
     );
   }
 
@@ -88,6 +111,7 @@ export class AgentClient {
         sequence,
         ...(event ? { event } : {}),
       },
+      "void",
     );
   }
 
@@ -130,6 +154,7 @@ export class AgentClient {
         ...(result ? { result } : {}),
         ...(cancelled ? { cancelled: true } : {}),
       },
+      "void",
     );
   }
 
@@ -137,12 +162,13 @@ export class AgentClient {
     commandId: string,
     leaseToken: string,
   ): Promise<{ cancelled: boolean }> {
-    return this.postSigned(
+    const result = resultObject(await this.postSigned(
       `/api/agent/commands/${encodeURIComponent(commandId)}/status`,
-      {
-        leaseToken,
-      },
-    );
+      { leaseToken },
+      "result",
+    ));
+    if (typeof result.cancelled !== "boolean") throw new AgentNetworkError("INVALID_RESPONSE");
+    return { cancelled: result.cancelled };
   }
 
   private async postUnsigned<T>(
@@ -150,17 +176,15 @@ export class AgentClient {
     body: Record<string, unknown>,
   ): Promise<T> {
     const raw = JSON.stringify(body);
-    const response = await this.transport.post<ApiResponse<T>>(pathname, raw);
-    if (!response || typeof response.success !== "boolean") throw new AgentNetworkError("INVALID_RESPONSE");
-    if (!response.success) throw new AgentNetworkError("ENROLLMENT_REJECTED");
-    if (!("result" in response)) throw new AgentNetworkError("INVALID_RESPONSE");
-    return response.result;
+    const response = success(await this.transport.post<unknown>(pathname, raw), "ENROLLMENT_REJECTED");
+    return resultObject(response.result) as T;
   }
 
-  private async postSigned<T>(
+  private async postSigned(
     pathname: string,
     body: Record<string, unknown>,
-  ): Promise<T> {
+    contract: "void" | "result",
+  ): Promise<unknown> {
     if (!this.identity)
       throw new Error("Agent identity is required. Enroll this agent first.");
     const raw = JSON.stringify(body);
@@ -174,15 +198,15 @@ export class AgentClient {
       pathname,
       raw,
     );
-    const response = await this.transport.post<ApiResponse<T>>(pathname, raw, {
+    const response = success(await this.transport.post<unknown>(pathname, raw, {
       "x-pluton-agent-id": this.identity.agentId,
       "x-pluton-agent-timestamp": timestamp,
       "x-pluton-agent-nonce": nonce,
       "x-pluton-agent-signature": signature,
-    });
-    if (!response || typeof response.success !== "boolean") throw new AgentNetworkError("INVALID_RESPONSE");
-    if (!response.success) throw new AgentNetworkError("REQUEST_REJECTED");
-    if (!("result" in response)) throw new AgentNetworkError("INVALID_RESPONSE");
-    return response.result;
+    }), "REQUEST_REJECTED");
+    // ACK/events/complete are void; heartbeat/poll/status require structured data.
+    // No retry here: a rejected/ambiguous response may already have been applied.
+    if (contract === "void") return;
+    return resultObject(response.result);
   }
 }

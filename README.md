@@ -114,3 +114,6 @@ before claiming native Ubuntu 24.04 support or point-release certification.
 
 GitHub CI validates only; it has read-only repository permissions and contains no
 publishing, deployment, tag or release job. Publish/review this branch manually.
+
+For signed ACK response failures and already queued backup/Source Access work,
+see [API compatibility and safe recovery](docs/ACK_COMPATIBILITY.md).
