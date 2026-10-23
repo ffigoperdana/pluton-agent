@@ -48,6 +48,40 @@ test("server void ACK/events/complete success does not require result, with sign
   assert.ok(f.requests.every((r) => r.body.leaseToken === lease));
 });
 
+test("optional diagnostics are HMAC-covered; old completion shapes remain unchanged", async (t) => {
+  const f = await fixture(t);
+  const sourceDiagnostics = {
+    version: 1 as const,
+    origin: "restic" as const,
+    problemCount: 1,
+    countIsLowerBound: true,
+    entries: [
+      {
+        relativePath: "app/logs/id_rsa",
+        entryType: "unknown" as const,
+        errno: "EACCES" as const,
+        excluded: false as const,
+      },
+    ],
+  };
+  await f.client.complete("command-01", lease, {
+    sequence: 2,
+    success: false,
+    error: "Remote filesystem backup failed.",
+    failureStage: "restic-backup",
+    failureCode: "source-entry-inaccessible",
+    sourceDiagnostics,
+  });
+  assert.deepEqual(f.requests[0].body.sourceDiagnostics, sourceDiagnostics);
+  await f.client.complete("command-02", lease, {
+    sequence: 2,
+    success: false,
+    error: "Remote filesystem backup failed.",
+  });
+  assert.ok(!Object.hasOwn(f.requests[1].body, "sourceDiagnostics"));
+});
+
+
 test("void endpoints reject invalid envelopes, malformed bodies, unsupported status and redirects without replay or leaks", async (t) => {
   const f = await fixture(t);
   for (const value of [{}, { success: false, error: identity.secret }, { success: null }, { success: "true" }, null, [], true, 1, "private"]) {

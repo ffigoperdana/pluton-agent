@@ -1,3 +1,4 @@
+import type { SourceDiagnostics } from "./sourceDiagnostics.js";
 export type AgentCommandType =
   | "PING"
   | "INVENTORY_REFRESH"
@@ -62,6 +63,7 @@ export type StoredCommandCompletion = {
   /** Closed, non-secret diagnostics for BACKUP_FILESYSTEM failures. */
   failureStage?: string;
   failureCode?: string;
+  sourceDiagnostics?: SourceDiagnostics;
   databaseId?: string;
   engine?: "mysql" | "mariadb" | "postgresql";
   /** A bounded, non-secret execution result such as a Restic snapshot ID. */

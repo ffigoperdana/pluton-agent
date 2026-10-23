@@ -1,14 +1,32 @@
 {
   "format": 1,
-  "agentVersion": "0.7.0",
+  "agentVersion": "0.7.1",
   "baseRevision": "095088beeb3a10dc5fdda4f55db07fa4d17240be",
   "extractionManifestSha256": "418785c9cdf1d3986b19b5671e30a612b7ac791f63b1201f136a274e66fb3404",
   "changes": [
     {
+      "file": "agent/src/backupFilesystem.test.ts",
+      "extractedSha256": "3f952363db42a6e419a7392fd2b0e8d0d764018a4c96b8397f18521fbe1030c7",
+      "sha256": "a7820a8a6b2788007f49e9c998427a66be33aea5002384dcd1abc29c271fe183",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+    },
+    {
+      "file": "agent/src/backupFilesystem.ts",
+      "extractedSha256": "b7ab6ce1f18ca0380e595f5ce543bbaa749955b0813a82325b18281e7d477e02",
+      "sha256": "db78ae5c6d05edde322fdea20da51d741910880459087ac2e9e42258e6593b7d",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+    },
+    {
+      "file": "agent/src/client.test.ts",
+      "extractedSha256": null,
+      "sha256": "de83cb9aa3d1e46149fa31085a63970ffb5d9b5e3cb35953bcf9d41e54845475",
+      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries. Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+    },
+    {
       "file": "agent/src/client.ts",
       "extractedSha256": "66e359bb356c5662c436e768e5bc19703ed2c50e08b996c536f6dcd63d536e58",
-      "sha256": "55fec87087c67ba029ca3462c30bf9999ecd2b90882736cb7888088ae91bedc0",
-      "reason": "Endpoint-aware void/result validation for the documented server ACK, event and completion schemas; strict enrollment, poll envelope and status fields; no request retries or authorization changes."
+      "sha256": "80031eb27eeb1630dfce84e32bc21947b6130f2131f739d08bfbc48e4e016050",
+      "reason": "Endpoint-aware void/result validation for the documented server ACK, event and completion schemas; strict enrollment, poll envelope and status fields; no request retries or authorization changes. Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
     },
     {
       "file": "agent/src/enrollmentState.test.ts",
@@ -29,6 +47,12 @@
       "reason": "Expose bounded network and enrollment-state diagnostics while retaining fail-closed sanitization."
     },
     {
+      "file": "agent/src/filesystemPolicy.ts",
+      "extractedSha256": "05ae8437a5658ed24dcc11e112f7a95c8a9576b3cc4ebf40ae268f739453acb4",
+      "sha256": "64b24ee029ef9fbdd422b4a8ac747b0a7ee97b0f23a46b45e755a51892e0d34c",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+    },
+    {
       "file": "agent/src/identity.ts",
       "extractedSha256": "c5546f13bfbaca4a3a1df1b974186f1b48e4088d0889c383e8c7b6f3c583ab6e",
       "sha256": "478627fdb4f85e4fe71c436254a53755472f8510d9beb5b29a4e8926b6d82b65",
@@ -39,6 +63,18 @@
       "extractedSha256": "23aea99d92bd687525ec8f32f3a3594d572ff562396be0990ac4b81842ce7118",
       "sha256": "b43c4b77c99e97c65e216bb5decc81077249cc60f539f061a6bf12129b7df5cc",
       "reason": "Use exclusive enrollment persistence and expose an explicit read-only HTTPS network diagnostic with no credentials or identity options."
+    },
+    {
+      "file": "agent/src/inventory.ts",
+      "extractedSha256": "22d254eac93e3e5c5c38b184b08ebd9b9dc94d905fc5ac0e28eacc0b27529910",
+      "sha256": "00a4190bb27d508541b1a76bcb64116aa6c9c8abb6dc78a1b65b77a1b02a177e",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+    },
+    {
+      "file": "agent/src/lifecycleTransport.test.ts",
+      "extractedSha256": "9ebdc7b2b723df22da05ce85a3a7e066a6e6556731cc857fc856d4f9c4f2e20f",
+      "sha256": "d2c6744d85eb6ff0f4d152d8644a4c001ae3966409dcb57494b23c5843209be1",
+      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries."
     },
     {
       "file": "agent/src/network.ts",
@@ -53,6 +89,30 @@
       "reason": "Probe automatic/IPv4/IPv6 verified HTTPS health GETs without private state; report shared 15-second DNS and 30-second total budgets."
     },
     {
+      "file": "agent/src/runtime.ts",
+      "extractedSha256": "89fb7c357291bab42fc73628fa4f2bbdf798ef55ede69563e89445b22f0369a9",
+      "sha256": "42fcf9cb84dc9ad55d2d04f0a174a348e5bec154824fd99db47547cf4fad5615",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+    },
+    {
+      "file": "agent/src/sourceAccessRuntime.test.ts",
+      "extractedSha256": "0836c212459b018515ecd229fc730fb58a9f114e6fe892273a0d64043ee0ec7e",
+      "sha256": "4619095d2a63bbe03fea718e949b187b95202db86a95f03684634f261040364a",
+      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries."
+    },
+    {
+      "file": "agent/src/sourceDiagnostics.test.ts",
+      "extractedSha256": null,
+      "sha256": "2ca47d57d7f0f7d77da041b16a24c3c038b8000a8cbe9f7426094fc537e8cfea",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+    },
+    {
+      "file": "agent/src/sourceDiagnostics.ts",
+      "extractedSha256": null,
+      "sha256": "98e57a81aacfb988b019ade78afd27559aa59b8aac6bbc3b8662e0bb97de1b9d",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+    },
+    {
       "file": "agent/src/transport.test.ts",
       "extractedSha256": null,
       "sha256": "5aac09c2b79d2f82e98b698241f9fbc3a41c9ebb60696ed0ec5e695ae45ee54f",
@@ -65,22 +125,10 @@
       "reason": "Select one verified connection before HTTP dispatch, enforce a 30-second total DNS/connect/response budget and origin boundaries without automatic request replay."
     },
     {
-      "file": "agent/src/client.test.ts",
-      "extractedSha256": null,
-      "sha256": "f34e69ab259238e0fee24cdf83d3086ef0ee9f8bb8b9eb8c8370883e08795cef",
-      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries."
-    },
-    {
-      "file": "agent/src/lifecycleTransport.test.ts",
-      "extractedSha256": "9ebdc7b2b723df22da05ce85a3a7e066a6e6556731cc857fc856d4f9c4f2e20f",
-      "sha256": "d2c6744d85eb6ff0f4d152d8644a4c001ae3966409dcb57494b23c5843209be1",
-      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries."
-    },
-    {
-      "file": "agent/src/sourceAccessRuntime.test.ts",
-      "extractedSha256": "0836c212459b018515ecd229fc730fb58a9f114e6fe892273a0d64043ee0ec7e",
-      "sha256": "4619095d2a63bbe03fea718e949b187b95202db86a95f03684634f261040364a",
-      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries."
+      "file": "agent/src/types.ts",
+      "extractedSha256": "591c87bf41b4f7b4c2727cf5c3140e321b6fdacbdb74ece3e21de3eb6be7f713",
+      "sha256": "6b368d6ccbad9414df0cbbb709be5449b0fc94d443f430698f94217ed3088929",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
     }
   ]
 }

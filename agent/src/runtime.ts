@@ -272,6 +272,10 @@ async function runOnceWork(
         ? {
             failureStage: backupFailure.stage,
             failureCode: backupFailure.code,
+            ...(command.payload.sourceDiagnosticsVersion === 1 &&
+            backupFailure.sourceDiagnostics
+              ? { sourceDiagnostics: backupFailure.sourceDiagnostics }
+              : {}),
             ...(backupFailure.databaseId
               ? {
                   databaseId: backupFailure.databaseId,

@@ -16,8 +16,8 @@ test(
   'standalone extraction has no runtime imports or build paths into the monorepo',
   validate,
 );
-test('actual server-generated request and command HMAC vectors match unchanged Agent', () => {
-  assert.equal(AGENT_VERSION, '0.7.0');
+test('Agent 0.7.1 retains the original 0.7.0 server request and command HMAC vectors', () => {
+  assert.equal(AGENT_VERSION, '0.7.1');
   const r = contract.request;
   assert.equal(
     signRequest(r.secret, r.timestamp, r.nonce, r.method, r.path, r.body),
@@ -69,6 +69,8 @@ test('versioned backup v4 retains exclusions and refuses newer versions and shel
     repositoryPassword: 'synthetic-only-repository-password',
   };
   assert.equal(parseBackupFilesystemPayload(v).version, 4);
+  assert.equal(parseBackupFilesystemPayload({ ...v, sourceDiagnosticsVersion: 1 }).sourceDiagnosticsVersion, 1);
+  assert.throws(() => parseBackupFilesystemPayload({ ...v, sourceDiagnosticsVersion: 2 }));
   assert.throws(() => parseBackupFilesystemPayload({ ...v, version: 5 }));
   assert.throws(() => parseBackupFilesystemPayload({ ...v, command: 'sh' }));
   assert.throws(() =>

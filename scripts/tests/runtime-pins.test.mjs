@@ -19,5 +19,5 @@ test('security runtime pins agree across installer, upgrade, packaging and CI wi
   assert.ok(installer.includes("readonly RESTIC_VERSION='0.19.1'"));
   assert.ok(installer.includes("readonly RCLONE_VERSION='1.75.1'"));
   assert.equal(JSON.parse(read('package.json')).packageManager, 'pnpm@10.20.0');
-  assert.equal(JSON.parse(read('agent/package.json')).version, '0.7.0');
+  assert.equal(JSON.parse(read('agent/package.json')).version, '0.7.1');
 });

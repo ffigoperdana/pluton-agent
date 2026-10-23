@@ -119,6 +119,11 @@ A root-readable directory does not prove all included children are accessible;
 bounded/partial scans are not full success. Source policy and protected-path checks
 remain fail closed, including validation/apply, mode setup, leases and cancellation.
 
+Agent 0.7.1 can return bounded relative source-error observations to a compatible
+Server after signed opt-in. See [source diagnostics](SOURCE_ACCESS_DIAGNOSTICS.md)
+for privacy, compatibility, preflight limitations and rollback order. Source
+Access Validate remains a root check, not a recursive saved-plan scan.
+
 Create a Managed Agent Backup Plan on the server using a dedicated SFTP repository.
 Keep source and repository disjoint; do not adopt a legacy repository through a
 managed plan. Test one explicit synthetic backup. Check exact snapshot ID, receipt,
