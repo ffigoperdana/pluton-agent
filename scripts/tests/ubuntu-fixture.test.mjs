@@ -5,6 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+test('synthetic Ubuntu control plane accepts the source release and rejects invalid enrollment/HMAC requests', {
+  skip: process.platform !== 'linux',
+}, () => {
+  const root = path.resolve(import.meta.dirname, '../..');
+  const result = spawnSync('python3', ['tests/ubuntu/mock-control-plane.test.py'], {
+    cwd: root, encoding: 'utf8', timeout: 10000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
 test('Ubuntu version diagnostics drain output and preserve producer failures under pipefail', {
   skip: process.platform !== 'linux',
 }, () => {

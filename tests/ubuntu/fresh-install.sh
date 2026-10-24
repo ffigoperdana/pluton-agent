@@ -98,7 +98,7 @@ import json
 from pathlib import Path
 p=json.loads(Path('/tmp/pluton-install-private/proof.json').read_text())
 assert p == {'enrollments':1,'heartbeats':1,'polls':0}
-print('PASS real fresh Ubuntu source build/install; private TLS enrollment and signed v0.7.0 heartbeat; no polling; original state preserved on reinstall refusal')
+print('PASS real fresh Ubuntu source build/install; private TLS enrollment and signed source-release heartbeat; no polling; original state preserved on reinstall refusal')
 print('PASS standalone upgrader refuses legacy provenance before Node/activation; no automatic migration')
 print('LIMITATION: disposable systemctl adapter; real systemd/cgroup startup and compatible production server were not tested')
 PY
