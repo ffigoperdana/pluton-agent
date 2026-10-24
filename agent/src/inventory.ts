@@ -12,7 +12,7 @@ import {
   detectDatabaseBinary,
 } from "./lifecyclePolicy.js";
 
-export const AGENT_VERSION = "0.7.0";
+export const AGENT_VERSION = "0.7.1";
 
 const SAFE_COMMANDS: AgentCapabilities["commandTypes"] = [
   "PING",

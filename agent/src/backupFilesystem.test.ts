@@ -425,6 +425,68 @@ async function readCalls(file: string): Promise<string[][]> {
     .map((line) => JSON.parse(line) as string[]);
 }
 
+for (const status of [0, 3])
+  linuxExecutionTest(
+    `structured Restic source errors remain failed with bounded diagnostics even with exit ${status}`,
+    async () => {
+      const fixture = await createExecutionFixture("");
+      try {
+        const record = JSON.stringify({
+          message_type: "error",
+          during: "archival",
+          item: path.join(fixture.source, "app/logs/id_rsa"),
+          error: {
+            message:
+              "open: permission denied; synthetic private provider detail",
+          },
+        });
+        await writeFile(
+          path.join(fixture.binDir, "restic"),
+          `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes('cat')) console.log(JSON.stringify({version:2,id:'c'.repeat(64)}));
+if (args.includes('backup')) {
+  const line = ${JSON.stringify(record)};
+  process.stderr.write(line.slice(0, 12));
+  setTimeout(() => { process.stderr.write(line.slice(12)); process.exitCode = ${status}; }, 10);
+}
+`,
+        );
+        await assert.rejects(
+          executeFilesystemBackup({
+            ...executionInput(fixture),
+            payload: {
+              ...executionInput(fixture).payload,
+              sourceDiagnosticsVersion: 1,
+            },
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof BackupFilesystemError);
+            assert.equal(error.stage, "restic-backup");
+            assert.equal(error.code, "source-entry-inaccessible");
+            assert.deepEqual(error.sourceDiagnostics?.entries, [
+              {
+                relativePath: "app/logs/id_rsa",
+                entryType: "unknown",
+                errno: "EACCES",
+                excluded: false,
+              },
+            ]);
+            assert.ok(
+              !JSON.stringify(error.sourceDiagnostics).includes(
+                "synthetic private provider detail",
+              ),
+            );
+            assert.ok(!error.message.includes("id_rsa"));
+            return true;
+          },
+        );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
+
 linuxExecutionTest(
   "v4 workflow prunes excluded inaccessible entries, anchors actual argv and preserves mandatory private filters",
   async () => {

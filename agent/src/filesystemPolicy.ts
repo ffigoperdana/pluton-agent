@@ -2,6 +2,14 @@ import path from "node:path";
 import { access, lstat, opendir, readlink, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { compileBackupExclusions } from "./backupExclusions.js";
+import {
+  addSourceProblem,
+  newSourceDiagnostics,
+  relativeSourcePath,
+  sourceErrno,
+  type SourceDiagnostics,
+  type SourceProblem,
+} from "./sourceDiagnostics.js";
 
 export type SourceAccessCode =
   | "source-parent-not-traversable"
@@ -12,13 +20,15 @@ export type SourceAccessCode =
   | "source-unsupported-type"
   | "source-policy-violation";
 
-/** Paths are only for the explicit local CLI diagnostic, never provider errors or journal messages. */
+/** Absolute paths stay in explicit local CLI diagnostics. Only the bounded
+ * relative sourceDiagnostics field may leave through a negotiated completion. */
 export class SourceAccessError extends Error {
   constructor(
     readonly code: SourceAccessCode,
     readonly requestedPath?: string,
     readonly resolvedPath?: string,
     readonly blockedPath?: string,
+    readonly sourceDiagnostics?: SourceDiagnostics,
   ) {
     super(
       code === "source-policy-violation"
@@ -163,6 +173,7 @@ export async function preflightSource(
     exclusions?: string[];
     /** Agent-local filters, separate from the bounded user policy. Never a payload field. */
     mandatoryExclusions?: readonly string[];
+    collectProblems?: boolean;
   } = {},
 ) {
   const excluded = compileBackupExclusions(options.exclusions || []);
@@ -172,8 +183,16 @@ export async function preflightSource(
   const resolved = await assertPathWithinAllowedRoots(candidate, roots);
   await assertTraversableParents(resolved, candidate);
   const check = async (entry: string, root = false) => {
+    let entryType: SourceProblem["entryType"] = "unknown";
     try {
       const stat = await lstat(entry);
+      entryType = stat.isFile()
+        ? "file"
+        : stat.isDirectory()
+          ? "directory"
+          : stat.isSymbolicLink()
+            ? "symlink"
+            : "other";
       if (stat.isSymbolicLink()) {
         if (root)
           throw new SourceAccessError(
@@ -198,6 +217,13 @@ export async function preflightSource(
       return stat;
     } catch (error) {
       if (error instanceof SourceAccessError) throw error;
+      const diagnostics = newSourceDiagnostics("preflight");
+      addSourceProblem(diagnostics, {
+        relativePath: relativeSourcePath(resolved, entry),
+        entryType,
+        errno: sourceErrno((error as NodeJS.ErrnoException).code),
+        excluded: false,
+      });
       throw new SourceAccessError(
         (error as NodeJS.ErrnoException).code === "ENOENT"
           ? "source-missing"
@@ -207,6 +233,7 @@ export async function preflightSource(
         candidate,
         resolved,
         entry,
+        diagnostics,
       );
     }
   };
@@ -226,11 +253,30 @@ export async function preflightSource(
   const end =
     Date.now() + Math.max(1, Math.min(options.deadlineMs || 5000, 5000));
   const pending = [resolved];
+  const problems = newSourceDiagnostics("preflight");
+  let failure: SourceAccessError | undefined;
+  const collect = (error: SourceAccessError) => {
+    if (!options.collectProblems || !error.sourceDiagnostics) throw error;
+    if (!failure || error.code === "source-entry-inaccessible") failure = error;
+    for (const problem of error.sourceDiagnostics.entries)
+      addSourceProblem(problems, problem);
+  };
+  const finish = () => {
+    if (failure)
+      throw new SourceAccessError(
+        failure.code,
+        candidate,
+        resolved,
+        failure.blockedPath,
+        problems,
+      );
+    return report;
+  };
   while (pending.length) {
     const directory = pending.pop()!;
     try {
       if (
-        (await resolveSource(directory)) !== directory ||
+        (await realpath(directory)) !== directory ||
         !within(resolved, directory)
       )
         throw new SourceAccessError(
@@ -243,7 +289,7 @@ export async function preflightSource(
         if (report.entriesChecked >= limit || Date.now() >= end) {
           report.scan =
             report.entriesChecked >= limit ? "entry-limit" : "deadline";
-          return report; // Iterator closes its fd; a partial scan is explicit.
+          return finish(); // Iterator closes its fd; a partial scan is explicit.
         }
         const filename = path.join(directory, entry.name);
         const relative = path
@@ -254,20 +300,51 @@ export async function preflightSource(
           report.entriesExcluded++;
           continue; // No lstat/access/open/traversal of an explicitly excluded entry.
         }
-        const info = await check(filename);
         report.entriesChecked++;
+        let info;
+        try {
+          info = await check(filename);
+        } catch (error) {
+          if (!(error instanceof SourceAccessError)) throw error;
+          collect(error);
+          continue;
+        }
         if (info.isSymbolicLink()) report.linksNotFollowed++;
         else if (info.isDirectory()) pending.push(filename);
       }
     } catch (error) {
-      if (error instanceof SourceAccessError) throw error;
-      throw new SourceAccessError(
-        "source-entry-inaccessible",
-        candidate,
-        resolved,
-        directory,
+      if (error instanceof SourceAccessError) {
+        // finish() has already aggregated the report; do not count it again.
+        if (error.sourceDiagnostics === problems) throw error;
+        collect(error);
+        continue;
+      }
+      if ((error as NodeJS.ErrnoException).code === "ELOOP")
+        throw new SourceAccessError(
+          "source-symlink-escape",
+          candidate,
+          resolved,
+          directory,
+        );
+      const diagnostics = newSourceDiagnostics("preflight");
+      addSourceProblem(diagnostics, {
+        relativePath: relativeSourcePath(resolved, directory),
+        entryType: "directory",
+        errno: sourceErrno((error as NodeJS.ErrnoException).code),
+        excluded: false,
+      });
+      collect(
+        new SourceAccessError(
+          (error as NodeJS.ErrnoException).code === "ENOENT"
+            ? "source-missing"
+            : "source-entry-inaccessible",
+          candidate,
+          resolved,
+          directory,
+          diagnostics,
+        ),
       );
     }
   }
-  return report;
+  return finish();
 }

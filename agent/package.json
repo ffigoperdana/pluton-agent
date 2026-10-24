@@ -1,6 +1,6 @@
 {
   "name": "@plutonhq/pluton-agent",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Outbound-only control-plane agent for the Pluton community fork",
   "license": "Apache-2.0",
   "private": true,

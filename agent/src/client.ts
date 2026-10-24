@@ -1,3 +1,4 @@
+import type { SourceDiagnostics } from "./sourceDiagnostics.js";
 import crypto from "node:crypto";
 import { AgentOperationError } from "./errors.js";
 import { AgentTransport } from "./transport.js";
@@ -124,6 +125,7 @@ export class AgentClient {
       error?: string;
       failureStage?: string;
       failureCode?: string;
+      sourceDiagnostics?: SourceDiagnostics;
       databaseId?: string;
       engine?: "mysql" | "mariadb" | "postgresql";
       result?: Record<string, unknown>;
@@ -136,6 +138,7 @@ export class AgentClient {
       error,
       failureStage,
       failureCode,
+      sourceDiagnostics,
       databaseId,
       engine,
       result,
@@ -150,6 +153,7 @@ export class AgentClient {
         ...(error ? { error } : {}),
         ...(failureStage ? { failureStage } : {}),
         ...(failureCode ? { failureCode } : {}),
+        ...(sourceDiagnostics ? { sourceDiagnostics } : {}),
         ...(databaseId ? { databaseId, engine } : {}),
         ...(result ? { result } : {}),
         ...(cancelled ? { cancelled: true } : {}),

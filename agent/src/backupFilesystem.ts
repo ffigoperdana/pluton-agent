@@ -14,7 +14,14 @@ import os from "node:os";
 import {
   parseBackupExclusions,
   sourceResticExclusions,
+  compileBackupExclusions,
 } from "./backupExclusions.js";
+import {
+  addSourceProblem,
+  newSourceDiagnostics,
+  sourceProblemFromRestic,
+  type SourceDiagnostics,
+} from "./sourceDiagnostics.js";
 import {
   compatibleResticParent,
   resticParentArgs,
@@ -55,6 +62,7 @@ const PROGRESS_INTERVAL_MS = 5_000;
 const SFTP_OPTION_KEYS = new Set(["host", "port", "user", "pass"]);
 
 export type BackupFilesystemPayload = {
+  sourceDiagnosticsVersion?: 1;
   version: 1 | 2 | 3 | 4;
   lifecycle?: BackupLifecycle;
   backupId: string;
@@ -230,6 +238,7 @@ export class BackupFilesystemError extends Error {
     readonly code: BackupFilesystemFailureCode,
     readonly databaseId?: string,
     readonly engine?: "mysql" | "mariadb" | "postgresql",
+    readonly sourceDiagnostics?: SourceDiagnostics,
   ) {
     super(BACKUP_FAILURE_MESSAGES[code] || "Remote backup lifecycle failed.");
     this.name = "BackupFilesystemError";
@@ -246,7 +255,13 @@ export function toBackupFilesystemError(
     stage = "repository-check";
   if (error instanceof BackupFilesystemError) return error;
   if (error instanceof SourceAccessError)
-    return new BackupFilesystemError(stage, error.code);
+    return new BackupFilesystemError(
+      stage,
+      error.code,
+      undefined,
+      undefined,
+      error.sourceDiagnostics,
+    );
   if (error instanceof BackupLifecycleError)
     return new BackupFilesystemError(
       error.stage,
@@ -343,6 +358,7 @@ type ProcessOptions = {
   shouldCancel: () => Promise<boolean>;
   onJsonLine?: (value: Record<string, unknown>) => Promise<void>;
   source?: string;
+  sourceExcluded?: (relative: string) => boolean;
 };
 
 function repositoryDiagnostic(
@@ -448,6 +464,7 @@ export function parseBackupFilesystemPayload(
     "repository",
     "rclone",
     "repositoryPassword",
+    "sourceDiagnosticsVersion",
     ...([2, 3, 4].includes(value.version as number) ? ["lifecycle"] : []),
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
@@ -455,6 +472,11 @@ export function parseBackupFilesystemPayload(
   }
   if (![1, 2, 3, 4].includes(value.version as number))
     throw new Error("Backup command version is unsupported.");
+  if (
+    value.sourceDiagnosticsVersion !== undefined &&
+    value.sourceDiagnosticsVersion !== 1
+  )
+    throw new Error("Source diagnostics version is unsupported.");
   const repository = asRecord(value.repository, "Repository configuration");
   const rclone = asRecord(value.rclone, "Rclone configuration");
   if (
@@ -484,6 +506,9 @@ export function parseBackupFilesystemPayload(
     throw new Error("Incompatible lifecycle envelope.");
   return {
     version: value.version as BackupFilesystemPayload["version"],
+    ...(value.sourceDiagnosticsVersion === 1
+      ? { sourceDiagnosticsVersion: 1 as const }
+      : {}),
     ...(lifecycle ? { lifecycle } : {}),
     backupId: validateId(value.backupId, "Backup ID"),
     planId: validateId(value.planId, "Plan ID"),
@@ -638,6 +663,22 @@ async function runProgram(
     let stdoutBuffer = "";
     let stderrBuffer = "";
     let sourceFailure: SourceAccessCode | undefined;
+    const sourceDiagnostics = newSourceDiagnostics("restic");
+    const consumeSourceLine = (line: string) => {
+      if (!options.source) return;
+      const problem = sourceProblemFromRestic(
+        line,
+        options.source,
+        options.sourceExcluded,
+      );
+      if (!problem) return;
+      addSourceProblem(sourceDiagnostics, problem);
+      if (!sourceFailure || problem.errno !== "ENOENT")
+        sourceFailure =
+          problem.errno === "ENOENT"
+            ? "source-missing"
+            : "source-entry-inaccessible";
+    };
     let cancelled = false;
     let eventChain = Promise.resolve();
     let settled = false;
@@ -666,6 +707,7 @@ async function runProgram(
     cancellationTimer.unref();
 
     const consumeLine = (line: string) => {
+      consumeSourceLine(line);
       if (!options.onJsonLine || !line.trim()) return;
       try {
         const parsed = JSON.parse(line) as unknown;
@@ -702,8 +744,7 @@ async function runProgram(
         stderrBuffer = appendBounded(stderrBuffer, String(chunk));
         const lines = stderrBuffer.split("\n");
         stderrBuffer = lines.pop() || "";
-        for (const line of lines)
-          sourceFailure ||= sourceFailureFromRestic(line, options.source);
+        for (const line of lines) consumeSourceLine(line);
       }
     });
     child.stdin.end(options.stdin || "");
@@ -733,14 +774,18 @@ async function runProgram(
               ),
             );
           }
-          if (code !== 0 && !options.allowFailure) {
-            if (options.source)
-              sourceFailure ||= sourceFailureFromRestic(
-                stderrBuffer,
-                options.source,
-              );
+          consumeSourceLine(stderrBuffer);
+          if ((code !== 0 || sourceFailure) && !options.allowFailure) {
             if (sourceFailure)
-              return reject(new SourceAccessError(sourceFailure));
+              return reject(
+                new SourceAccessError(
+                  sourceFailure,
+                  undefined,
+                  undefined,
+                  undefined,
+                  sourceDiagnostics,
+                ),
+              );
             return reject(
               new Error(
                 `Backup process exited with status ${code ?? "unknown"}.`,
@@ -886,29 +931,12 @@ export function sourceFailureFromRestic(
   line: string,
   source: string,
 ): SourceAccessCode | undefined {
-  try {
-    const error = JSON.parse(line);
-    if (
-      error.message_type !== "error" ||
-      !["scan", "archival"].includes(error.during) ||
-      typeof error.item !== "string"
-    )
-      return;
-    const relative = path.relative(source, error.item);
-    if (
-      relative === ".." ||
-      relative.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(relative)
-    )
-      return;
-    const message =
-      typeof error.error?.message === "string" ? error.error.message : "";
-    if (/permission denied|operation not permitted/i.test(message))
-      return "source-entry-inaccessible";
-    if (/no such file|not found/i.test(message)) return "source-missing";
-  } catch {
-    /* Not a safe Restic source record. */
-  }
+  const problem = sourceProblemFromRestic(line, source);
+  return problem
+    ? problem.errno === "ENOENT"
+      ? "source-missing"
+      : "source-entry-inaccessible"
+    : undefined;
 }
 
 function summaryFromRestic(
@@ -1410,6 +1438,7 @@ export async function executeFilesystemBackup(input: {
         input.allowedRoots,
         {
           scan: true,
+          collectProblems: payload.sourceDiagnosticsVersion === 1,
           exclusions: payload.excludes,
           mandatoryExclusions: input.serverManagedSource
             ? DELEGATED_PRIVATE_DIRECTORY_EXCLUDES
@@ -1678,6 +1707,7 @@ export async function executeFilesystemBackup(input: {
           payload.version === 4
             ? {
                 scan: true,
+                collectProblems: payload.sourceDiagnosticsVersion === 1,
                 exclusions: payload.excludes,
                 mandatoryExclusions: input.serverManagedSource
                   ? DELEGATED_PRIVATE_DIRECTORY_EXCLUDES
@@ -1718,6 +1748,16 @@ export async function executeFilesystemBackup(input: {
     await runProgram(restic, args, {
       env,
       source,
+      ...(payload.version === 4
+        ? {
+            sourceExcluded: compileBackupExclusions([
+              ...payload.excludes,
+              ...(input.serverManagedSource
+                ? DELEGATED_PRIVATE_DIRECTORY_EXCLUDES
+                : []),
+            ]),
+          }
+        : {}),
       ...(job ? { cwd: job.workspace, timeoutMs: 24 * 60 * 60 * 1000 } : {}),
       shouldCancel: input.shouldCancel,
       onJsonLine: async (event) => {

@@ -31,6 +31,9 @@ else:
         secret_file.write_text(secret)
         secret_file.chmod(0o600)
 token = private.joinpath('token').read_text().strip()
+# Match the reviewed source release, not a stale pre-diagnostics version. Keep
+# exact version and capability checks on both authenticated request shapes.
+agent_version = json.loads(Path(__file__).resolve().parents[2].joinpath('agent/package.json').read_text())['version']
 proof = {'enrollments': 0, 'heartbeats': 0, 'polls': 0}
 if (args.native_vm or args.existing_identity) and private.joinpath('proof.json').exists():
     proof = json.loads(private.joinpath('proof.json').read_text())
@@ -50,7 +53,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise AssertionError('No enrollment during runtime upgrade')
                 assert hmac.compare_digest(body['token'], token)
                 assert proof['enrollments'] == 0
-                assert body['inventory']['agentVersion'] == '0.7.0'
+                assert body['inventory']['agentVersion'] == agent_version
                 assert body['inventory']['capabilities']['backupExclusionsVersion'] == 1
                 proof['enrollments'] += 1
                 result = dict(deviceId='synthetic-device', agentId='synthetic-agent', secret=secret, pollIntervalSeconds=15)
@@ -66,7 +69,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 assert hmac.compare_digest(signature, self.headers['x-pluton-agent-signature'])
                 nonces.add(nonce)
                 if self.path == '/api/agent/heartbeat':
-                    assert body['agentVersion'] == '0.7.0' and body['capabilities']['backupExclusionsVersion'] == 1
+                    assert body['agentVersion'] == agent_version and body['capabilities']['backupExclusionsVersion'] == 1
                     proof['heartbeats'] += 1
                     result = {}
                 else:
