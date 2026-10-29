@@ -34,4 +34,7 @@ jobs:
       # Traffic control affects this disposable container's private loopback only.
       - run: docker run --rm --network none --cap-add NET_ADMIN pluton-agent-routing:ci-${{ matrix.ubuntu }}
       - run: docker build --platform linux/amd64 --progress=plain --target runtime-upgrade --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} --file tests/ubuntu/Dockerfile --tag pluton-agent-runtime-upgrade:ci-${{ matrix.ubuntu }} .
+      - run: docker build --platform linux/amd64 --progress=plain --build-arg TOOL_IMAGE=pluton-agent-validation:ci-${{ matrix.ubuntu }} --file tests/post-dump/Dockerfile --tag pluton-agent-post-dump:ci-${{ matrix.ubuntu }} .
+      - shell: pwsh
+        run: ./scripts/validate-post-dump.ps1 -RuntimeImage pluton-agent-post-dump:ci-${{ matrix.ubuntu }}
       # This workflow validates only. No release, registry, deployment or write permissions.

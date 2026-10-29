@@ -13,20 +13,38 @@
     {
       "file": "agent/src/backupFilesystem.ts",
       "extractedSha256": "b7ab6ce1f18ca0380e595f5ce543bbaa749955b0813a82325b18281e7d477e02",
-      "sha256": "db78ae5c6d05edde322fdea20da51d741910880459087ac2e9e42258e6593b7d",
-      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+      "sha256": "f5956223785e346cadc6b9cd82b273929256f63e9b30ad731342747c7fe2d35a",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
+    },
+    {
+      "file": "agent/src/backupLifecycle.ts",
+      "extractedSha256": "01a23e5a93d1cdc97f3bea6594e5076413dd87984f85b03d1dfe47b21fe2bcb8",
+      "sha256": "acd7e86bbe8324894f2f6f7bec68e595e2da7a77c62bdb6a758d383fb1b225cb",
+      "reason": "Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
     },
     {
       "file": "agent/src/client.test.ts",
       "extractedSha256": null,
-      "sha256": "de83cb9aa3d1e46149fa31085a63970ffb5d9b5e3cb35953bcf9d41e54845475",
-      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries. Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+      "sha256": "d9b49dc23e77bfda32997d9f200714f10fa3666484e55ed08ada9ffedf803480",
+      "reason": "Synthetic real-transport regression against documented void responses, strict results and durable command replay boundaries. Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
     },
     {
       "file": "agent/src/client.ts",
       "extractedSha256": "66e359bb356c5662c436e768e5bc19703ed2c50e08b996c536f6dcd63d536e58",
-      "sha256": "80031eb27eeb1630dfce84e32bc21947b6130f2131f739d08bfbc48e4e016050",
-      "reason": "Endpoint-aware void/result validation for the documented server ACK, event and completion schemas; strict enrollment, poll envelope and status fields; no request retries or authorization changes. Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+      "sha256": "e501faa1eb34d2ecf5d2cf3a1d23b8ac02da689e7b4068ad927d165402af8684",
+      "reason": "Endpoint-aware void/result validation for the documented server ACK, event and completion schemas; strict enrollment, poll envelope and status fields; no request retries or authorization changes. Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
+    },
+    {
+      "file": "agent/src/commandStatus.test.ts",
+      "extractedSha256": null,
+      "sha256": "799a653610e1e93fd91552d8ded044ab6ea78e7186a40db493e12338c1cb859c",
+      "reason": "Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
+    },
+    {
+      "file": "agent/src/commandStatus.ts",
+      "extractedSha256": null,
+      "sha256": "7768cab221800e74632a5a411d15c2df6896422ccd07e541ee940cdbdd408205",
+      "reason": "Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
     },
     {
       "file": "agent/src/enrollmentState.test.ts",
@@ -71,6 +89,18 @@
       "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
     },
     {
+      "file": "agent/src/lifecyclePolicy.ts",
+      "extractedSha256": "0722008050ee327e50afbc92ea6d9285e90a5befed4407c677ba087cf0f9cd75",
+      "sha256": "1cad0d522cbb94e7dd5caa910d9256a7893c4f77fdf9b6b26ac13ca757f0a5b0",
+      "reason": "Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
+    },
+    {
+      "file": "agent/src/lifecycleProcess.ts",
+      "extractedSha256": "4c5d2ef9c5390ebb6a6c3a3e8e17aee4ce90798f499d20e638f985900793f591",
+      "sha256": "4b1d1d0adb5670aa2c19fc1904687e3d91d5a1defcac90291048c8b8cc52e4cb",
+      "reason": "Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
+    },
+    {
       "file": "agent/src/lifecycleTransport.test.ts",
       "extractedSha256": "9ebdc7b2b723df22da05ce85a3a7e066a6e6556731cc857fc856d4f9c4f2e20f",
       "sha256": "d2c6744d85eb6ff0f4d152d8644a4c001ae3966409dcb57494b23c5843209be1",
@@ -89,10 +119,16 @@
       "reason": "Probe automatic/IPv4/IPv6 verified HTTPS health GETs without private state; report shared 15-second DNS and 30-second total budgets."
     },
     {
+      "file": "agent/src/progressDelivery.ts",
+      "extractedSha256": "78c7d3c2ebe16b14943a33daeb5723610863da0f6148c85fc13a8d4c94328c71",
+      "sha256": "be47b328b6e0ef78b6d1ec39d18f71717b12ddcef26925f1c610d11e0dcd46d4",
+      "reason": "Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
+    },
+    {
       "file": "agent/src/runtime.ts",
       "extractedSha256": "89fb7c357291bab42fc73628fa4f2bbdf798ef55ede69563e89445b22f0369a9",
-      "sha256": "42fcf9cb84dc9ad55d2d04f0a174a348e5bec154824fd99db47547cf4fad5615",
-      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+      "sha256": "b93212942121aaebfc7c5b901165de0fae6734ec7e7f6f513a06053b218ec04d",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
     },
     {
       "file": "agent/src/sourceAccessRuntime.test.ts",
@@ -121,8 +157,8 @@
     {
       "file": "agent/src/transport.ts",
       "extractedSha256": "176017fee31bfd0138e743f1957e54a7011a34a7040ddbae59b9174ba32d1ebc",
-      "sha256": "15ce3670fd88dac363ca65262d1171de54047a95565abd02904e8e25ac776b55",
-      "reason": "Select one verified connection before HTTP dispatch, enforce a 30-second total DNS/connect/response budget and origin boundaries without automatic request replay."
+      "sha256": "312a240f286e6a8e3450fc4520e1d8222dfcfc5df52b225dd9e70a49e1c43c8a",
+      "reason": "Select one verified connection before HTTP dispatch, enforce a 30-second total DNS/connect/response budget and origin boundaries without automatic request replay. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
     },
     {
       "file": "agent/src/types.ts",

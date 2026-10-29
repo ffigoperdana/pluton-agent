@@ -49,8 +49,9 @@ export class AgentTransport {
     pathname: string,
     body: string,
     headers: Record<string, string> = {},
+    timeoutMs?: number,
   ): Promise<T> {
-    return this.request<T>("POST", pathname, body, headers);
+    return this.request<T>("POST", pathname, body, headers, timeoutMs);
   }
 
   async health(): Promise<unknown> {
@@ -58,13 +59,16 @@ export class AgentTransport {
   }
 
   private async request<T>(method: "GET" | "POST", pathname: string, body: string,
-    headers: Record<string, string>): Promise<T> {
+    headers: Record<string, string>, timeoutMs = this.timeoutMs): Promise<T> {
     const url = new URL(pathname, this.config.serverUrl);
     if (url.origin !== this.config.serverUrl.origin || url.username || url.password || url.hash) {
       throw new AgentNetworkError("REQUEST_REJECTED");
     }
     const controller = new AbortController();
-    const deadline = setTimeout(() => controller.abort(new AgentNetworkError("REQUEST_TIMEOUT")), this.timeoutMs);
+    // Status retries may shorten, never extend, the standalone request budget.
+    // The same abort signal covers DNS, verified connection and response reads.
+    const deadline = setTimeout(() => controller.abort(new AgentNetworkError("REQUEST_TIMEOUT")),
+      Math.max(1, Math.min(this.timeoutMs, timeoutMs)));
     let socket: Awaited<ReturnType<typeof connectServer>> | undefined;
     const agent = this.client === https ? new https.Agent({ keepAlive: false }) : new http.Agent({ keepAlive: false });
     try {

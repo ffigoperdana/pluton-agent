@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { validate } from './validate-standalone.mjs';
 import { verifyRelease } from './verify-release.mjs';
+import { sourceArchive } from './lib/source-archive.mjs';
 const root = path.resolve(import.meta.dirname, '..');
 const git = (...args) =>
   execFileSync('git', ['-C', root, ...args], {
@@ -34,12 +35,7 @@ const sourceName = `pluton-agent-${version}-source.tar.gz`,
 fs.writeFileSync(
   path.join(output, sourceName),
   gzipSync(
-    git(
-      'archive',
-      '--format=tar',
-      `--prefix=pluton-agent-${version}/`,
-      sourceCommit,
-    ),
+    sourceArchive(root, sourceCommit, `pluton-agent-${version}/`),
     { level: 9 },
   ),
 );

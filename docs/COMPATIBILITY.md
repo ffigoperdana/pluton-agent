@@ -20,8 +20,21 @@ The initial extraction preserved the 36 Agent TypeScript source files from the
 Pluton Server commit in `contracts/extraction-source.json`. Subsequent independent
 [HTTPS/enrollment changes](NETWORK_ENROLLMENT.md) use the explicit hash delta
 `contracts/standalone-source-v1.json`; original extraction hashes and server
-golden vectors remain unchanged. Advertised capability/wire version stays 0.7.0.
+golden vectors remain unchanged. The current Agent advertises 0.7.1; original
+0.7.0 HMAC/exclusion vectors remain authoritative. This reliability port keeps
+that advertisement and uses the reviewed immutable Git SHA to identify the fix.
 The server need not import this repository to run its production backend.
+
+The [post-dump reliability port](POST_DUMP_BACKUP_RELIABILITY_PORT_REPORT.md)
+requires backend PR [#53](https://github.com/ffigoperdana/pluton/pull/53), merge
+`edcfe5fba3a2eb47730307fa53c90730177b5430`, **before** the Agent upgrade. The
+backend must accept the new closed status/finalization completion diagnostics.
+Request HMAC, exact lease binding, void ACK/events/completion responses, identity
+and durable receipt schemas are unchanged. Status may supply `leaseExpiresAt`;
+legacy boolean-only cancellation results remain compatible under the existing
+authenticated 60-second renewal contract. Failed/malformed authorization checks
+never permit repository work. Only status retries transient 429/5xx/network or
+timeouts; TLS and authorization refusals remain terminal.
 
 | Pairing/function                        | Status and boundary                                                                                                                             |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |

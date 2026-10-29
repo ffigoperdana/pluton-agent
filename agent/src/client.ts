@@ -1,8 +1,9 @@
 import type { SourceDiagnostics } from "./sourceDiagnostics.js";
 import crypto from "node:crypto";
 import { AgentOperationError } from "./errors.js";
-import { AgentTransport } from "./transport.js";
+import { AgentTransport, AgentHttpError } from "./transport.js";
 import { AgentNetworkError } from "./network.js";
+import { CommandStatusError, type CommandStatusCode } from "./commandStatus.js";
 import { signRequest, verifyCommandDetailed } from "./protocol.js";
 import type {
   AgentCommandEnvelope,
@@ -38,12 +39,15 @@ function commandEnvelope(value: unknown): value is AgentCommandEnvelope {
 
 export class AgentClient {
   private readonly transport: AgentTransport;
+  private readonly statusInFlight = new Map<string, Promise<{ cancelled: boolean }>>();
+  private readonly leaseDeadlines = new Map<string, number>();
 
   constructor(
     private readonly config: AgentConfig,
     private readonly identity?: StoredAgentIdentity,
+    transport?: AgentTransport,
   ) {
-    this.transport = new AgentTransport(config);
+    this.transport = transport || new AgentTransport(config);
   }
 
   async enroll(
@@ -88,6 +92,10 @@ export class AgentClient {
     if (!verification.valid) {
       throw new AgentOperationError("verify-command", verification.reason);
     }
+    this.leaseDeadlines.set(
+      result.command.id + ":" + result.command.leaseToken,
+      Date.parse(result.command.leaseExpiresAt!),
+    );
     return result.command;
   }
 
@@ -162,17 +170,61 @@ export class AgentClient {
     );
   }
 
-  async commandStatus(
+  commandStatus(
     commandId: string,
     leaseToken: string,
   ): Promise<{ cancelled: boolean }> {
-    const result = resultObject(await this.postSigned(
-      `/api/agent/commands/${encodeURIComponent(commandId)}/status`,
-      { leaseToken },
-      "result",
-    ));
-    if (typeof result.cancelled !== "boolean") throw new AgentNetworkError("INVALID_RESPONSE");
-    return { cancelled: result.cancelled };
+    const key = commandId + ":" + leaseToken;
+    const pending = this.statusInFlight.get(key);
+    if (pending) return pending;
+    const check = this.readCommandStatus(commandId, leaseToken, key).finally(() =>
+      this.statusInFlight.delete(key),
+    );
+    this.statusInFlight.set(key, check);
+    return check;
+  }
+
+  private async readCommandStatus(commandId: string, leaseToken: string, key: string): Promise<{ cancelled: boolean }> {
+    // Only this authenticated, idempotent status operation retries. Enrollment,
+    // poll, ACK, events and completion retain their standalone response contracts.
+    const budget = Date.now() + 15_000;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const lease = this.leaseDeadlines.get(key);
+      if (lease !== undefined && (!Number.isFinite(lease) || lease <= Date.now()))
+        throw new CommandStatusError("command-lease-unavailable");
+      const timeout = Math.min(5000, budget - Date.now(), (lease ?? Infinity) - Date.now());
+      if (timeout <= 0) throw new CommandStatusError("control-plane-timeout");
+      const started = Date.now();
+      try {
+        const result = resultObject(await this.postSigned(
+          `/api/agent/commands/${encodeURIComponent(commandId)}/status`,
+          { leaseToken }, "result", timeout,
+        ));
+        if (typeof result.cancelled !== "boolean")
+          throw new CommandStatusError("control-plane-response-invalid");
+        const expires = result.leaseExpiresAt;
+        if (expires !== undefined && (typeof expires !== "string" || !Number.isFinite(Date.parse(expires))))
+          throw new CommandStatusError("control-plane-response-invalid");
+        if (!result.cancelled && expires !== undefined && Date.parse(expires as string) <= Date.now())
+          throw new CommandStatusError("command-lease-unavailable");
+        // Legacy boolean-only servers renew for 60s at SQLite second precision.
+        // Request start is the conservative lower bound, never response arrival.
+        this.leaseDeadlines.set(key, expires !== undefined
+          ? Date.parse(expires as string) : Math.floor(started / 1000) * 1000 + 60_000);
+        return { cancelled: result.cancelled };
+      } catch (error) {
+        const code = commandStatusCode(error);
+        if (attempt === 2 || ![
+          "control-plane-rate-limited", "control-plane-unavailable",
+          "control-plane-timeout", "control-plane-network-failed",
+        ].includes(code)) throw new CommandStatusError(code);
+        const delay = attempt === 0 ? 250 : 750;
+        if (Date.now() + delay >= Math.min(budget, lease ?? Infinity))
+          throw new CommandStatusError(code);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+    throw new CommandStatusError("control-plane-unexpected");
   }
 
   private async postUnsigned<T>(
@@ -188,6 +240,7 @@ export class AgentClient {
     pathname: string,
     body: Record<string, unknown>,
     contract: "void" | "result",
+    timeoutMs?: number,
   ): Promise<unknown> {
     if (!this.identity)
       throw new Error("Agent identity is required. Enroll this agent first.");
@@ -207,10 +260,35 @@ export class AgentClient {
       "x-pluton-agent-timestamp": timestamp,
       "x-pluton-agent-nonce": nonce,
       "x-pluton-agent-signature": signature,
-    }), "REQUEST_REJECTED");
+    }, timeoutMs), "REQUEST_REJECTED");
     // ACK/events/complete are void; heartbeat/poll/status require structured data.
     // No retry here: a rejected/ambiguous response may already have been applied.
     if (contract === "void") return;
     return resultObject(response.result);
   }
+}
+
+/** Keep standalone network/TLS categories intact; translate only at status checks. */
+function commandStatusCode(error: unknown): CommandStatusCode {
+  if (error instanceof CommandStatusError) return error.code;
+  if (error instanceof AgentHttpError) {
+    if (error.statusCode === 429) return "control-plane-rate-limited";
+    if (error.statusCode >= 500 && error.statusCode <= 599) return "control-plane-unavailable";
+    if ([401, 403].includes(error.statusCode)) return "command-authorization-rejected";
+    if ([404, 409, 410].includes(error.statusCode)) return "command-lease-unavailable";
+    return "control-plane-response-invalid";
+  }
+  if (error instanceof AgentNetworkError) {
+    switch (error.code) {
+      case "REQUEST_TIMEOUT": case "DNS_TIMEOUT": case "CONNECT_TIMEOUT":
+        return "control-plane-timeout";
+      case "DNS_FAILURE": case "CONNECT_FAILURE": case "CONNECTION_INTERRUPTED":
+        return "control-plane-network-failed";
+      case "TLS_VERIFICATION_FAILED": case "REQUEST_REJECTED": case "ENROLLMENT_REJECTED":
+        return "command-authorization-rejected";
+      case "INVALID_RESPONSE": case "RESPONSE_TOO_LARGE":
+        return "control-plane-response-invalid";
+    }
+  }
+  return "control-plane-unexpected";
 }

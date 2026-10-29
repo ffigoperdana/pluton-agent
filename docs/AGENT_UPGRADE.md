@@ -25,6 +25,13 @@ running upgrades. This is an operator procedure, not permission to deploy.
 
 ## Normal usage
 
+For the post-dump reliability correction, first deploy the backend containing
+PR #53 under separate approval, then follow the same guarded standalone upgrade
+below. No installer bypass, re-enrollment or new token is required. Protocol-v1
+Agents participate in the existing hold/drain handshake; do not manually stop
+them merely to upgrade. See [the port report](POST_DUMP_BACKUP_RELIABILITY_PORT_REPORT.md)
+for backend compatibility, the one-run backup UAT and remaining production gates.
+
 Use the existing reviewed checkout on the Agent host. The path below is synthetic:
 
 ```bash

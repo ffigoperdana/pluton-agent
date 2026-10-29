@@ -1,0 +1,17 @@
+{
+  "sourceCommit": "edcfe5fba3a2eb47730307fa53c90730177b5430",
+  "sourcePullRequest": "https://github.com/ffigoperdana/pluton/pull/53",
+  "leaseRenewalMs": 60000,
+  "failureStages": ["post-dump-status-check", "command-status-check"],
+  "statusFailureCodes": [
+    "command-lease-unavailable", "command-authorization-rejected",
+    "control-plane-rate-limited", "control-plane-unavailable",
+    "control-plane-timeout", "control-plane-network-failed",
+    "control-plane-response-invalid", "control-plane-unexpected"
+  ],
+  "artifactFailureCode": "database-artifact-finalization-failed",
+  "statusResults": [
+    { "cancelled": false }, { "cancelled": true },
+    { "cancelled": false, "leaseExpiresAt": "2099-01-01T00:00:00.000Z" }
+  ]
+}

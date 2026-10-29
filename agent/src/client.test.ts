@@ -104,16 +104,21 @@ test("void endpoints reject invalid envelopes, malformed bodies, unsupported sta
 
 test("required results remain strict for enrollment, heartbeat, poll and status", async (t) => {
   const f = await fixture(t);
-  for (const invoke of [() => f.client.enroll("synthetic-token", inventory), () => f.client.heartbeat(inventory), () => f.client.poll(), () => f.client.commandStatus("command-01", lease)]) {
+  for (const [invoke, code] of [
+    [() => f.client.enroll("synthetic-token", inventory), "INVALID_RESPONSE"],
+    [() => f.client.heartbeat(inventory), "INVALID_RESPONSE"],
+    [() => f.client.poll(), "INVALID_RESPONSE"],
+    [() => f.client.commandStatus("command-01", lease), "control-plane-response-invalid"],
+  ] as const) {
     for (const value of [{ success: true }, { success: true, result: null }, { success: true, result: [] }, { success: true, result: "private" }]) {
-      f.reply(value); await assert.rejects(invoke(), { code: "INVALID_RESPONSE" });
+      f.reply(value); await assert.rejects(invoke(), { code });
     }
   }
   for (const result of [{}, { command: false }, { command: 0 }, { command: {} }, { command: { id: "command-01" } }]) {
     f.reply({ success: true, result }); await assert.rejects(f.client.poll(), { code: "INVALID_RESPONSE" });
   }
   for (const result of [{}, { cancelled: "false" }, { cancelled: null }]) {
-    f.reply({ success: true, result }); await assert.rejects(f.client.commandStatus("command-01", lease), { code: "INVALID_RESPONSE" });
+    f.reply({ success: true, result }); await assert.rejects(f.client.commandStatus("command-01", lease), { code: "control-plane-response-invalid" });
   }
   for (const field of ["agentId", "deviceId", "secret", "pollIntervalSeconds"]) {
     const result: Record<string, unknown> = { ...identity }; delete result[field];
