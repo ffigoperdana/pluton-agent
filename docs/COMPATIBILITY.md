@@ -43,7 +43,7 @@ timeouts; TLS and authorization refusals remain terminal.
 | Filesystem envelopes 1–4                | Existing parser retained; v4 for exclusions; unknown versions/fields refuse                                                                     |
 | Database/hooks lifecycle versions 1/2   | Existing engines, multiple DB limits, root-owned tools and constrained hooks unchanged; real DB integration NOT TESTED by the synthetic fixture |
 | Older server or Agent                   | Capability/version negotiation remains required; no claim that every historic release is supported                                              |
-| Existing monorepo-installed Agent       | Standalone upgrade REFUSED; separate state-preserving migration approval required                                                               |
+| Existing monorepo-installed Agent       | Ordinary upgrade REFUSED; explicit `--migrate-monorepo` transaction ([guide](MONOREPO_MIGRATION.md)): exact provenance, same drain/health/rollback   |
 | Existing standalone installation        | App-only upgrade/rollback with its own committed source and distribution marker; real systemd lifecycle NOT TESTED locally                      |
 | Server replication/recovery             | Remains server-only; Agent receives no S3 replica key or Internal root privileges                                                               |
 | ARM64/non-systemd/custom layout         | UNSUPPORTED for these installer/upgrade contracts                                                                                               |

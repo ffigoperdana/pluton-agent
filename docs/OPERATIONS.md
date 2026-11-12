@@ -197,7 +197,7 @@ An explicitly reviewed rollback uses `sudo bash upgrade-agent.sh --rollback
 | BACKUP failure                | Preserve exact safe stage/code, check private disk/ownership/fsync evidence; identical copied bytes do not prove durable backup |
 | PROVENANCE timeout/mismatch   | Dedicated bounded verification remains; inspect private receipts, locale-compatible fixed checkout, no accepted-record rewrite  |
 | HEALTH_CHECK failure          | Inspect safe code, service stability and authenticated heartbeat; retain successful rollback and old Agent                      |
-| Missing distribution marker   | Stop: legacy monorepo migration requires separate review, never hand-edit the record                                            |
+| Missing distribution marker   | Server-monorepo install: follow [MONOREPO_MIGRATION.md](MONOREPO_MIGRATION.md) (`--migrate-monorepo`); never hand-edit the record |
 | Unsupported OS/architecture | Only Ubuntu 22.04/24.04 x86_64 are installer targets; derivatives, other versions and ARM64 are refused. Check actual OS results before calling 24.04 supported. |
 | Missing required utility | Install the named utility through approved Ubuntu packages; do not replace global Node/pnpm or bypass checks. |
 | systemd/cgroup preflight fails | Require native systemd and unified cgroup v2. A container adapter is test-only; do not fake the service manager or disable AppArmor. |

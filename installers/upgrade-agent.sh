@@ -8,6 +8,7 @@ UPGRADE_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 upgrade_usage() {
 	cat <<'EOF'
 Usage: sudo bash installers/upgrade-agent.sh [--check | --rollback <upgrade-id>]
+       sudo bash installers/upgrade-agent.sh --migrate-monorepo [--check]
 
 Default: build the checked-out committed Agent using the installed private
 Node/Corepack and pinned pnpm, drain locally, back up, replace app and the
@@ -17,6 +18,12 @@ restart only pluton-agent.service. No enrollment or configuration writes.
 --check       Read-only local preflight; no download, build, heartbeat or restart.
 --rollback ID Restore the recorded previous app/runtime after a fresh drain and
               exact preserved-state check. Never restore old identity/receipts.
+--migrate-monorepo
+              Same transaction for an Agent installed by the Pluton Server
+              monorepo installer: requires its exact verified provenance, keeps
+              identity/config/unit/policy/receipts and adds only the standalone
+              distribution marker. Add --check for a read-only preflight.
+              --rollback <id> restores the exact monorepo installation.
 --help        Show this help.
 
 Pause server plans and settle Source Access requests before upgrading. Running
@@ -31,6 +38,7 @@ case "${1:-}" in
 	'') [[ $# == 0 ]] || exit 2 ;;
 	--check) [[ $# == 1 ]] || exit 2 ;;
 	--rollback) [[ $# == 2 && "$2" =~ ^[0-9]{14}-[a-f0-9]{12}-[a-f0-9]{12}$ ]] || exit 2 ;;
+	--migrate-monorepo) [[ $# == 1 || ( $# == 2 && "$2" == --check ) ]] || exit 2 ;;
 	*) upgrade_usage >&2; exit 2 ;;
 esac
 
@@ -51,7 +59,16 @@ done
 [[ -f /etc/os-release && -d /run/systemd/system ]] || fail 'An existing systemd Linux installation is required.'
 [[ "$(uname -m)" == x86_64 ]] || fail 'Only the existing Linux x86_64 private toolchain is supported.'
 [[ -f "$INSTALL_ROOT/.verified-install" && ! -L "$INSTALL_ROOT/.verified-install" ]] || fail 'Existing verified installer provenance is required; no new installation is permitted.'
-grep -Fx 'distribution=pluton-agent-standalone-v1' "$INSTALL_ROOT/.verified-install" >/dev/null || fail 'This distribution only upgrades standalone Agents; monorepo installations require separate state-preserving migration approval.'
+if grep -Fx 'distribution=pluton-agent-standalone-v1' "$INSTALL_ROOT/.verified-install" >/dev/null; then
+	[[ "${1:-}" != --migrate-monorepo ]] || fail 'Already a standalone installation; use the normal upgrade, not --migrate-monorepo.'
+else
+	# Only an explicit migration, or rollback of a recorded migration (verified by
+	# the transaction against its receipt), may act on monorepo provenance.
+	case "${1:-}" in
+		--migrate-monorepo|--rollback) ;;
+		*) fail 'This distribution only upgrades standalone Agents; monorepo installations require separate state-preserving migration approval. Review docs/MONOREPO_MIGRATION.md, then use --migrate-monorepo.' ;;
+	esac
+fi
 upgrade_parent="$INSTALL_ROOT"
 while :; do
 	[[ ! -L "$upgrade_parent" && "$(stat -c '%u' "$upgrade_parent")" == 0 ]] || fail 'Private installation is not root protected.'

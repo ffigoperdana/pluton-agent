@@ -87,6 +87,8 @@ diverging live authorities are not the final design.
    preserve identity/TLS/config/roots/delegations/receipts/leases, record repository
    lineage, install reviewed app with transactional health/rollback. Do not simply
    add the distribution marker, re-enroll or copy a different identity.
+   Implemented as `upgrade-agent.sh --migrate-monorepo`; see
+   [MONOREPO_MIGRATION.md](MONOREPO_MIGRATION.md). Steps 2 to 5 and 7 are unchanged.
 7. Only after that acceptance, remove old `agent/`, Agent installer/support/tests
    and the Agent root-workspace build dependencies from the server. Keep server
    types, authentication, Source Access API/store/history, command generation,

@@ -1308,3 +1308,181 @@ test(
     assert.throws(() => upgrade.treeDigest(f.c.app, f.c.owner), /unsafe/);
   },
 );
+
+// Monorepo-to-standalone migration (`--migrate-monorepo`). Synthetic records only.
+const monorepoProvenance = (node = "v22.18.0") =>
+  `format=1\nnode=${node}\nrestic=0.19.1:${"a".repeat(64)}\nrclone=1.75.1:${"b".repeat(64)}\nnode_archive=${"c".repeat(64)}\nsource=${"d".repeat(64)}\ntree=${"e".repeat(64)}\n`;
+const standaloneProvenance = monorepoProvenance("v22.23.4") + upgrade.STANDALONE_MARKER + "\n";
+
+test("only an explicit migration accepts exact monorepo provenance; standalone stays on the normal path", () => {
+  for (const mode of ["upgrade", "check", "rollback"])
+    assert.deepEqual(upgrade.provenanceEligibility(standaloneProvenance, mode), { standalone: true });
+  for (const mode of ["migrate", "migrate-check", "rollback"])
+    assert.deepEqual(upgrade.provenanceEligibility(monorepoProvenance(), mode), { standalone: false });
+  assert.deepEqual(upgrade.provenanceEligibility(monorepoProvenance("v22.23.4"), "migrate"), { standalone: false });
+  for (const mode of ["upgrade", "check"])
+    assert.throws(
+      () => upgrade.provenanceEligibility(monorepoProvenance(), mode),
+      /monorepo migration requires separate review \(use the explicit --migrate-monorepo transaction\)/,
+    );
+  for (const mode of ["migrate", "migrate-check"])
+    assert.throws(() => upgrade.provenanceEligibility(standaloneProvenance, mode), /Already a standalone installation/);
+  for (const malformed of [
+    monorepoProvenance().replace("format=1", "format=2"),
+    monorepoProvenance() + "extra=1\n",
+    monorepoProvenance().replace(/^tree=.*\n/m, ""),
+    monorepoProvenance().replace("node=v22.18.0", "node=v20.0.0"),
+    monorepoProvenance().replace(/\n$/, ""),
+    "distribution=other\n" + monorepoProvenance(),
+    monorepoProvenance().split("\n").reverse().join("\n"),
+    monorepoProvenance().replace(/\n/g, "\r\n"),
+  ])
+    assert.throws(
+      () => upgrade.provenanceEligibility(malformed, "migrate"),
+      /Unsupported installer provenance format|exact protected monorepo installer provenance/,
+      JSON.stringify(malformed),
+    );
+});
+
+test("a migration adds exactly the standalone marker; ordinary upgrades keep their existing lines", () => {
+  const values = { sourceHash: "1".repeat(64), digest: "2".repeat(64), nodeArchive: "3".repeat(64) };
+  const migrated = upgrade.nextProvenance(monorepoProvenance(), { ...values, migration: true });
+  assert.equal(
+    migrated,
+    `format=1\nnode=v22.23.4\nrestic=0.19.1:${"a".repeat(64)}\nrclone=1.75.1:${"b".repeat(64)}\nnode_archive=${"3".repeat(64)}\nsource=${"1".repeat(64)}\ntree=${"2".repeat(64)}\n${upgrade.STANDALONE_MARKER}\n`,
+  );
+  assert.deepEqual(upgrade.provenanceEligibility(migrated, "upgrade"), { standalone: true });
+  const upgraded = upgrade.nextProvenance(standaloneProvenance, { sourceHash: values.sourceHash, digest: values.digest });
+  assert.equal(upgraded.split("\n").filter((line) => line === upgrade.STANDALONE_MARKER).length, 1);
+  assert(upgraded.includes(`node_archive=${"c".repeat(64)}`));
+  assert.throws(() => upgrade.nextProvenance(standaloneProvenance, { ...values, migration: true }), /not the exact monorepo record/);
+  assert.throws(() => upgrade.nextProvenance("format=1\n", values), /Malformed prior install provenance/);
+});
+
+test("the CLI accepts only the exact supported operations", () => {
+  const id = "20261112083321-aaaaaaaaaaaa-51e137370015";
+  assert.deepEqual(upgrade.parseInvocation([]), { mode: "upgrade" });
+  assert.deepEqual(upgrade.parseInvocation(["--check"]), { mode: "check" });
+  assert.deepEqual(upgrade.parseInvocation(["--rollback", id]), { mode: "rollback", id });
+  assert.deepEqual(upgrade.parseInvocation(["--migrate-monorepo"]), { mode: "migrate" });
+  assert.deepEqual(upgrade.parseInvocation(["--migrate-monorepo", "--check"]), { mode: "migrate-check" });
+  for (const args of [
+    ["--check", "--migrate-monorepo"],
+    ["--migrate-monorepo", "--rollback"],
+    ["--migrate-monorepo", "--check", "extra"],
+    ["--rollback"],
+    ["--rollback", "../escape"],
+    ["--check", "extra"],
+    ["--force"],
+  ])
+    assert.equal(upgrade.parseInvocation(args), undefined, JSON.stringify(args));
+});
+
+function migrationFixture(t, options) {
+  const f = fixture(t, options);
+  f.c.migration = true;
+  f.c.installedStandalone = false;
+  fs.writeFileSync(f.c.provenance, monorepoProvenance());
+  // Same record transformation as production, from the transaction's own backup.
+  f.c.writeProvenance = (id) =>
+    upgrade.durableWrite(
+      f.c.provenance,
+      upgrade.nextProvenance(fs.readFileSync(path.join(f.c.backups, id, "verified-install"), "utf8"), {
+        sourceHash: "1".repeat(64),
+        digest: "2".repeat(64),
+        migration: f.c.migration,
+      }),
+      f.c.sync,
+      0o644,
+    );
+  return f;
+}
+
+test("monorepo migration reuses the drained transaction, records lineage and preserves identity/config/unit/policy", (t) => {
+  const f = migrationFixture(t);
+  const result = upgrade.upgrade(f.c);
+  assert.equal(result.phase, "healthy");
+  assert.equal(f.app(), "new app");
+  f.assertPreserved();
+  const receipt = JSON.parse(fs.readFileSync(path.join(f.c.backups, result.id, "receipt.json"), "utf8"));
+  assert.equal(receipt.migration, "monorepo");
+  assert.equal(receipt.phase, "healthy");
+  const provenance = fs.readFileSync(f.c.provenance, "utf8");
+  assert.deepEqual(upgrade.provenanceEligibility(provenance, "upgrade"), { standalone: true });
+  assert.deepEqual(
+    f.calls.filter((call) => ["build", "stop", "start", "health"].includes(call)),
+    ["build", "stop", "start", "health"],
+  );
+  assert.equal(fs.existsSync(f.c.hold), false);
+});
+
+test("explicit rollback of a completed migration restores the exact monorepo app and provenance", (t) => {
+  const f = migrationFixture(t);
+  const result = upgrade.upgrade(f.c);
+  f.c.installedStandalone = true;
+  assert.equal(upgrade.rollback(f.c, result.id).phase, "rolled-back");
+  assert.equal(f.app(), "old app");
+  assert.equal(fs.readFileSync(f.c.provenance, "utf8"), monorepoProvenance());
+  f.assertPreserved();
+  assert.equal(fs.existsSync(f.c.hold), false);
+});
+
+test("failed migration startup rolls back automatically to the exact monorepo installation", (t) => {
+  const f = migrationFixture(t);
+  let first = true;
+  const healthy = f.c.service.health;
+  f.c.service.health = () => {
+    if (first) {
+      first = false;
+      throw new Error("bad startup");
+    }
+    healthy();
+  };
+  assert.throws(() => upgrade.upgrade(f.c), /failed safely/);
+  assert.equal(f.app(), "old app");
+  assert.equal(fs.readFileSync(f.c.provenance, "utf8"), monorepoProvenance());
+  f.assertPreserved();
+  assert.equal(fs.existsSync(f.c.hold), false);
+});
+
+test("an interrupted migration without the marker rolls back only through its own migration receipt", (t) => {
+  const f = migrationFixture(t);
+  f.c.checkpoint = (point) => {
+    if (point === "old-moved") {
+      const error = new Error("synthetic interruption");
+      error.interrupted = true;
+      throw error;
+    }
+  };
+  assert.throws(() => upgrade.upgrade(f.c), /synthetic interruption/);
+  const [id] = f.retained();
+  assert.equal(fs.readFileSync(f.c.provenance, "utf8"), monorepoProvenance());
+  assert.equal(upgrade.rollback(f.c, id).phase, "rolled-back");
+  assert.equal(f.app(), "old app");
+  assert.equal(fs.readFileSync(f.c.provenance, "utf8"), monorepoProvenance());
+  f.assertPreserved();
+});
+
+test("manual rollback without a resolved Agent account refuses before any hold or fence exists", (t) => {
+  // Regression: production manual rollback skips preflight; publishing the fence
+  // used to chown with an undefined UID, leaving the hold and an empty fence.
+  const f = fixture(t);
+  const result = upgrade.upgrade(f.c);
+  delete f.c.agentUid;
+  delete f.c.agentGid;
+  assert.throws(() => upgrade.rollback(f.c, result.id), /Existing unprivileged Agent account is required/);
+  assert.equal(fs.existsSync(f.c.hold), false);
+  assert.equal(fs.existsSync(path.join(f.c.state, "source-access-activity.json")), false);
+  assert.equal(f.app(), "new app");
+  assert.throws(() => upgrade.acquireActivity(f.c, "synthetic"), /Existing unprivileged Agent account is required/);
+  assert.equal(fs.existsSync(path.join(f.c.state, "source-access-activity.json")), false);
+});
+
+test("non-standalone provenance cannot roll back an ordinary upgrade receipt", (t) => {
+  const f = fixture(t);
+  const result = upgrade.upgrade(f.c);
+  f.c.installedStandalone = false;
+  assert.throws(() => upgrade.rollback(f.c, result.id), /only roll back a recorded monorepo migration/);
+  assert.equal(f.app(), "new app");
+  assert.equal(fs.existsSync(f.c.hold), false);
+});

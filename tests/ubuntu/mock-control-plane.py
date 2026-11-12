@@ -13,6 +13,7 @@ from pathlib import Path
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--native-vm', action='store_true', help='Idle synthetic poll responses; disposable booted VM only')
 parser.add_argument('--existing-identity', action='store_true', help='Reuse only the disposable fixture identity; refuse enrollment')
+parser.add_argument('--expect-agent-version', choices=['0.7.0'], help='Accept the exact older Server-monorepo Agent release (migration fixture only)')
 args = parser.parse_args()
 if args.native_vm:
     assert Path('/opt/pluton-disposable-native-vm').is_file(), 'Disposable native VM sentinel required'
@@ -34,6 +35,8 @@ token = private.joinpath('token').read_text().strip()
 # Match the reviewed source release, not a stale pre-diagnostics version. Keep
 # exact version and capability checks on both authenticated request shapes.
 agent_version = json.loads(Path(__file__).resolve().parents[2].joinpath('agent/package.json').read_text())['version']
+if args.expect_agent_version:
+    agent_version = args.expect_agent_version
 proof = {'enrollments': 0, 'heartbeats': 0, 'polls': 0}
 if (args.native_vm or args.existing_identity) and private.joinpath('proof.json').exists():
     proof = json.loads(private.joinpath('proof.json').read_text())
