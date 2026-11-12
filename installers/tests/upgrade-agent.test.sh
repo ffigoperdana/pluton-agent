@@ -13,4 +13,15 @@ for upgrade_flag in --re-enroll --token uninstall --server --purge --force; do
 		[[ "$upgrade_status" == 2 ]] || { printf 'FAIL: option was not refused at argument parsing\n' >&2; exit 1; }
 	fi
 done
+bash "$test_directory/../upgrade-agent.sh" --help | grep -F -- '--migrate-monorepo' >/dev/null
+for upgrade_arguments in '--migrate-monorepo extra' '--migrate-monorepo --rollback' '--check --migrate-monorepo' '--migrate-monorepo --check extra'; do
+	# shellcheck disable=SC2086 # deliberate word splitting of the synthetic argument list
+	if bash "$test_directory/../upgrade-agent.sh" $upgrade_arguments >/dev/null 2>&1; then
+		printf 'FAIL: upgrade accepted an unsupported migration invocation\n' >&2
+		exit 1
+	else
+		upgrade_status=$?
+		[[ "$upgrade_status" == 2 ]] || { printf 'FAIL: migration invocation was not refused at argument parsing\n' >&2; exit 1; }
+	fi
+done
 node --test "$test_directory/upgrade-agent.test.cjs" "$test_directory/upgrade-agent.provenance.test.cjs" "$test_directory/install-agent.locale.test.cjs"

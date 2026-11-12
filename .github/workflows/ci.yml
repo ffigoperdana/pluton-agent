@@ -37,4 +37,11 @@ jobs:
       - run: docker build --platform linux/amd64 --progress=plain --build-arg TOOL_IMAGE=pluton-agent-validation:ci-${{ matrix.ubuntu }} --file tests/post-dump/Dockerfile --tag pluton-agent-post-dump:ci-${{ matrix.ubuntu }} .
       - shell: pwsh
         run: ./scripts/validate-post-dump.ps1 -RuntimeImage pluton-agent-post-dump:ci-${{ matrix.ubuntu }}
+      # Real Server-monorepo Agent from the public Server repository at its last
+      # installer commit (read-only export), then --migrate-monorepo and rollback.
+      - if: matrix.ubuntu == '22.04'
+        shell: pwsh
+        run: |
+          git clone --quiet --filter=blob:none --no-checkout https://github.com/ffigoperdana/pluton.git "$env:RUNNER_TEMP/pluton-server"
+          ./scripts/validate-monorepo-migration.ps1 -MonorepoCheckout "$env:RUNNER_TEMP/pluton-server" -MonorepoCommit c187e2c3a830544d5c44663046519807c2ebc982 -UbuntuVersion ${{ matrix.ubuntu }}
       # This workflow validates only. No release, registry, deployment or write permissions.

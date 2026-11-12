@@ -22,6 +22,64 @@ const HOLD = ".upgrade-lock";
 // A complete private runtime/toolchain has thousands of entries. Keep the
 // installer's exact verifier, but give this full-tree scan its own finite budget.
 const PROVENANCE_TIMEOUT_MS = 5 * 60_000;
+const STANDALONE_MARKER = "distribution=pluton-agent-standalone-v1";
+// Exact record written by the Pluton Server monorepo installer: the same format=1
+// fields as a standalone install, without the distribution marker. Anything else
+// (extra/unknown/reordered lines, another format) needs a separate review.
+const MONOREPO_PROVENANCE =
+  /^format=1\nnode=v22\.(?:18\.0|23\.4)\nrestic=[0-9.]+:[a-f0-9]{64}\nrclone=[0-9.]+:[a-f0-9]{64}\nnode_archive=[a-f0-9]{64}\nsource=(?:[a-f0-9]{64}|not-reusable)\ntree=[a-f0-9]{64}\n$/;
+const MIGRATION = "monorepo";
+
+/** Which installed provenance each operation may act on. Fail closed otherwise. */
+function provenanceEligibility(provenance, mode) {
+  const standalone = provenance.split("\n").includes(STANDALONE_MARKER);
+  requireSafe(/^format=1$/m.test(provenance), "Unsupported installer provenance format; separate review is required.");
+  if (mode === "migrate" || mode === "migrate-check") {
+    requireSafe(!standalone, "Already a standalone installation; use the normal upgrade, not --migrate-monorepo.");
+    requireSafe(
+      MONOREPO_PROVENANCE.test(provenance),
+      "Monorepo migration requires the exact protected monorepo installer provenance; review this installation separately.",
+    );
+  } else if (mode !== "rollback")
+    requireSafe(
+      standalone,
+      "Only protected standalone provenance is eligible; monorepo migration requires separate review (use the explicit --migrate-monorepo transaction).",
+    );
+  return { standalone };
+}
+
+/** Next provenance record: refresh source/tree/runtime fields; a migration adds only the marker. */
+function nextProvenance(metadata, { sourceHash, digest, nodeArchive, migration }) {
+  requireSafe(
+    /^source=.+$/m.test(metadata) && /^tree=[a-f0-9]{64}$/m.test(metadata),
+    "Malformed prior install provenance.",
+  );
+  let next = metadata
+    .replace(/^source=.+$/m, `source=${sourceHash}`)
+    .replace(/^tree=.+$/m, `tree=${digest}`)
+    .replace(/^node=.+$/m, `node=${runtime.TARGET_NODE}`)
+    .replace(/^node_archive=.+$/m, (original) => (nodeArchive ? `node_archive=${nodeArchive}` : original));
+  if (migration) {
+    requireSafe(
+      MONOREPO_PROVENANCE.test(metadata) && !/^distribution=/m.test(metadata),
+      "Migration source provenance is not the exact monorepo record.",
+    );
+    next = next + STANDALONE_MARKER + "\n";
+  }
+  return next;
+}
+
+/** Exact supported command lines; anything else is refused before any context work. */
+function parseInvocation(args) {
+  const [option, extra, ...rest] = args;
+  if (rest.length) return undefined;
+  if (!option && !extra) return { mode: "upgrade" };
+  if (option === "--check" && !extra) return { mode: "check" };
+  if (option === "--rollback" && ID.test(extra || "")) return { mode: "rollback", id: extra };
+  if (option === "--migrate-monorepo" && !extra) return { mode: "migrate" };
+  if (option === "--migrate-monorepo" && extra === "--check") return { mode: "migrate-check" };
+  return undefined;
+}
 const hash = (data) => crypto.createHash("sha256").update(data).digest("hex");
 const exists = (file) => {
   try {
@@ -223,6 +281,12 @@ function assertLocallyDrained(c) {
   }
 }
 function acquireActivity(c, operationId) {
+  // Validate before the exclusive create: a failed chown must never leave a
+  // half-written fence that blocks the Agent and every later retry.
+  requireSafe(
+    Number.isInteger(c.agentUid) && Number.isInteger(c.agentGid),
+    "Existing unprivileged Agent account is required.",
+  );
   const filename = path.join(c.state, ACTIVITY);
   const token = JSON.stringify({
     version: 1,
@@ -434,6 +498,8 @@ function upgrade(c) {
       binding: identityBinding(c.state).digest,
       previous: treeDigest(c.app, c.owner, c.enforceModes),
       runtime: runtime.record(c),
+      // Lineage: rollback restores the exact monorepo provenance (no marker).
+      ...(c.migration ? { migration: MIGRATION } : {}),
     };
     save(c, receipt);
     return receipt;
@@ -776,8 +842,20 @@ function rollback(c, id) {
     ((r.version === 1 && !r.runtime) || (r.version === 2 && r.runtime)) &&
       r.id === id &&
       /^[a-f0-9]{64}$/.test(r.previous || "") &&
-      r.binding === identityBinding(c.state).digest,
+      r.binding === identityBinding(c.state).digest &&
+      (r.migration === undefined || r.migration === MIGRATION),
     "Unknown or incomplete rollback receipt.",
+  );
+  // Without the standalone marker only an interrupted/failed monorepo migration
+  // may be rolled back; it restores that monorepo installation exactly.
+  requireSafe(
+    c.installedStandalone !== false || r.migration === MIGRATION,
+    "Non-standalone provenance can only roll back a recorded monorepo migration.",
+  );
+  // Before any hold/fence exists: a later fence publication needs this account.
+  requireSafe(
+    Number.isInteger(c.agentUid) && Number.isInteger(c.agentGid),
+    "Existing unprivileged Agent account is required.",
   );
   if (r.phase !== "building")
     requireSafe(
@@ -870,7 +948,7 @@ function verifiedInstallDigest(run, snapshot, install) {
   );
 }
 
-function productionContext(repository) {
+function productionContext(repository, mode = "upgrade") {
   requireSafe(
     process.platform === "linux" && process.getuid() === 0,
     "Linux root context is required.",
@@ -922,12 +1000,21 @@ function productionContext(repository) {
   c.app = path.join(c.install, "app");
   c.runtime = path.join(c.install, "runtime");
   const installedProvenance = fs.readFileSync(path.join(c.install, ".verified-install"), "utf8");
-  requireSafe(/^format=1$/m.test(installedProvenance) && /^distribution=pluton-agent-standalone-v1$/m.test(installedProvenance), "Only protected standalone provenance is eligible; monorepo migration requires separate review.");
+  c.installedStandalone = provenanceEligibility(installedProvenance, mode).standalone;
+  c.migration = mode === "migrate" || mode === "migrate-check";
   const installedNode = /^node=(.+)$/m.exec(installedProvenance)?.[1];
   requireSafe(runtime.SUPPORTED_NODES.has(installedNode), "Unsupported private Node toolchain; separate review is required.");
   c.runtimeChange = installedNode !== runtime.TARGET_NODE;
   c.hold = path.join(c.install, HOLD);
   c.provenance = path.join(c.install, ".verified-install");
+  // Manual rollback does not run preflight, but it still publishes an activity
+  // fence owned by the service account. Resolve that account for every mode.
+  c.agentUid = Number(run("/usr/bin/id", ["-u", "pluton-agent"]));
+  c.agentGid = Number(run("/usr/bin/id", ["-g", "pluton-agent"]));
+  requireSafe(
+    Number.isInteger(c.agentUid) && c.agentUid > 0 && Number.isInteger(c.agentGid),
+    "Existing unprivileged Agent account is required.",
+  );
   const git = (args) =>
     run("/usr/bin/git", [
       "-c",
@@ -1291,17 +1378,16 @@ function productionContext(repository) {
       "utf8",
     );
     if (c.runtimeChange) requireSafe(fs.readFileSync(path.join(c.backups, id, "build/node-archive.sha256"), "utf8").trim() === runtime.ARCHIVE_SHA256, "Candidate runtime archive differs from the reviewed pin.");
-    requireSafe(
-      /^source=.+$/m.test(metadata) && /^tree=[a-f0-9]{64}$/m.test(metadata),
-      "Malformed prior install provenance.",
-    );
     durableWrite(
       c.provenance,
-      metadata
-        .replace(/^source=.+$/m, `source=${sourceHash}`)
-        .replace(/^tree=.+$/m, `tree=${digest}`)
-        .replace(/^node=.+$/m, `node=${runtime.TARGET_NODE}`)
-        .replace(/^node_archive=.+$/m, (original) => c.runtimeChange ? `node_archive=${fs.readFileSync(path.join(c.backups, id, "build/node-archive.sha256"), "utf8").trim()}` : original),
+      nextProvenance(metadata, {
+        sourceHash,
+        digest,
+        nodeArchive: c.runtimeChange
+          ? fs.readFileSync(path.join(c.backups, id, "build/node-archive.sha256"), "utf8").trim()
+          : undefined,
+        migration: c.migration,
+      }),
       c.sync,
       0o644,
     );
@@ -1312,19 +1398,14 @@ function productionContext(repository) {
 
 if (require.main === module) {
   try {
-    const [repository, option, id] = process.argv.slice(2);
-    atStage("CONTEXT", () =>
-      requireSafe(
-        process.argv.length >= 3 &&
-          process.argv.length <= 5 &&
-          ((!option && !id) ||
-            (option === "--check" && !id) ||
-            (option === "--rollback" && ID.test(id || ""))),
-        "Unsupported upgrade invocation.",
-      ),
-    );
-    const c = atStage("CONTEXT", () => productionContext(repository));
-    if (option === "--check") {
+    const [repository, ...args] = process.argv.slice(2);
+    const invocation = atStage("CONTEXT", () => {
+      const parsed = repository ? parseInvocation(args) : undefined;
+      requireSafe(parsed, "Unsupported upgrade invocation.");
+      return parsed;
+    });
+    const c = atStage("CONTEXT", () => productionContext(repository, invocation.mode));
+    if (invocation.mode === "check" || invocation.mode === "migrate-check") {
       atStage("PREFLIGHT", () => {
         c.preflight();
         requireSafe(
@@ -1333,15 +1414,15 @@ if (require.main === module) {
         );
       });
       console.log(
-        `Read-only local preflight PASS. Source commit: ${c.commit}. Server plans/queued requests require operator review. No heartbeat/build/restart performed.`,
+        `Read-only local ${invocation.mode === "migrate-check" ? "monorepo migration " : ""}preflight PASS. Source commit: ${c.commit}. Server plans/queued requests require operator review. No heartbeat/build/restart performed.`,
       );
     } else {
       const result =
-        option === "--rollback"
-          ? atStage("MANUAL_ROLLBACK", () => rollback(c, id))
+        invocation.mode === "rollback"
+          ? atStage("MANUAL_ROLLBACK", () => rollback(c, invocation.id))
           : upgrade(c);
       console.log(
-        `Agent transaction ${result.phase}. Upgrade ID: ${result.id}. Source commit: ${c.commit}. Rollback artifacts retained privately.`,
+        `Agent transaction ${result.phase}. Upgrade ID: ${result.id}. Source commit: ${c.commit}.${invocation.mode === "migrate" ? " Monorepo installation migrated to the standalone distribution." : ""} Rollback artifacts retained privately.`,
       );
     }
   } catch (error) {
@@ -1368,4 +1449,8 @@ module.exports = {
   productionContext,
   validateService,
   validateDisk,
+  provenanceEligibility,
+  nextProvenance,
+  parseInvocation,
+  STANDALONE_MARKER,
 };

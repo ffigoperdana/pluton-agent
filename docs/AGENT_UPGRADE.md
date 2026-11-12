@@ -10,8 +10,10 @@ integrity, durability, admission and rollback requirements below remain in force
 
 This standalone distribution upgrades **standalone installations only**. Missing
 `distribution=pluton-agent-standalone-v1` in existing protected provenance refuses
-activation; do not add it manually. Monorepo-installed Agents need the separate
-reviewed migration described in [the extraction audit](EXTRACTION_AUDIT.md).
+activation; do not add it manually. A Server-monorepo installation is migrated
+only by the explicit `--migrate-monorepo` transaction described in
+[the monorepo migration guide](MONOREPO_MIGRATION.md), which verifies the exact
+monorepo provenance and writes the marker itself.
 These scripts use this repository's own Git history; see [release pinning](RELEASES.md).
 
 `installers/upgrade-agent.sh` replaces Agent application artifacts and, for the

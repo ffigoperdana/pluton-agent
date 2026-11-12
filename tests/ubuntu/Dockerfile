@@ -56,4 +56,16 @@ RUN touch /opt/pluton-disposable-ubuntu-test && chmod 0600 /opt/pluton-disposabl
     && install -m 0755 tests/ubuntu/systemctl-fixture.sh /usr/local/bin/systemctl \
     && bash tests/ubuntu/runtime-upgrade.sh
 
+# Real Server-monorepo Agent installation from a separately supplied, read-only
+# source snapshot (named build context "monorepo"), then the reviewed
+# --migrate-monorepo transaction, its rollbacks and a repeat migration.
+# See scripts/validate-monorepo-migration.ps1. Not part of default validation.
+FROM prerequisites AS monorepo-migration
+ARG UBUNTU_VERSION
+COPY --from=monorepo . /opt/pluton-monorepo-source
+RUN touch /opt/pluton-disposable-ubuntu-test && chmod 0600 /opt/pluton-disposable-ubuntu-test \
+    && find . -name '*.sh' -type f -exec chmod 0755 {} + \
+    && install -m 0755 tests/ubuntu/systemctl-fixture.sh /usr/local/bin/systemctl \
+    && bash tests/ubuntu/monorepo-migration.sh /opt/pluton-monorepo-source
+
 FROM validation AS default-validation

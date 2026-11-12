@@ -68,8 +68,10 @@ identity is refused; it must not silently adopt a monorepo Agent. For an already
 standalone installation use `sudo bash upgrade-agent.sh --check`, then the normal
 standalone upgrade after drain and separate operational approval. The
 [Node 22.23.4 security patch](docs/NODE_RUNTIME_SECURITY.md) documents fresh versus
-existing-enrollment procedures and runtime rollback. Existing monorepo
-Agents remain on their old upgrade path until a reviewed migration is available.
+existing-enrollment procedures and runtime rollback. An Agent installed by the
+Pluton Server monorepo is moved to this distribution only with the explicit,
+rollback-capable `upgrade-agent.sh --migrate-monorepo` transaction; see the
+[monorepo migration guide](docs/MONOREPO_MIGRATION.md).
 An identity-less failed first installation may qualify for the separate guarded
 `recover-agent-install.sh --check` and explicit private quarantine procedure in
 the [recovery guide](docs/NETWORK_ENROLLMENT.md). Any identity, nonempty state or
