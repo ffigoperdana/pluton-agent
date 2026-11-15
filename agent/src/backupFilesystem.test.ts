@@ -2283,7 +2283,9 @@ type CapturedScenario = {
 
 for (const scenario of <CapturedScenario[]>[
   {
-    name: "a hang with no new output until killed (NFS hard mount, Agent deadline) after a recovered 503 retry and NFS read errors",
+    // The Agent's own deadline is a separate branch that never classifies; with no
+    // database job an S3 backup has no deadline, so this pins the external-signal path.
+    name: "a hang with no new output (NFS hard mount) ended by an external SIGTERM after a recovered 503 retry and NFS read errors",
     exit: 0,
     signal: "SIGTERM",
     diagnostics: lines(RECOVERED_UPLOAD, CAPTURED.sourceReadFailures),
@@ -2368,6 +2370,52 @@ for (const scenario of <CapturedScenario[]>[
       '{"message_type":"exit_error","code":11,"message":"repository is already locked exclusively by PID 4242 on app-01\\nthe `unlock` command can be used to remove stale locks"}',
     ),
     code: "restic-backup-failed",
+  },
+  {
+    // Rclone child killed alone (OOM): the bridge's permanent error (Restic 0.19.1
+    // internal/backend/rclone/backend.go) in a give-up line; the lines are synthetic.
+    name: "exit 1 whose only give-up line is the closed Rclone stdio connection, after a recovered 503 retry",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      "Save(<data/0123456789>) returned error, retrying after 1.2s: unexpected EOF",
+      "Save(<data/0123456789>) failed: rclone stdio connection already closed",
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: rclone stdio connection already closed"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // A not-exist answer (a lock removed by another client) is permanent in Restic's
+    // REST backend and gives up at once; it is no evidence of an outage.
+    name: "exit 1 whose only give-up line is an HTTP 404, after a recovered 503 retry and a local fatal error",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      "Load(<lock/0123456789>, 0, 0) failed: unexpected HTTP response (404): 404 Not Found",
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: write /tmp/restic-temp-pack-0123456789: no space left on device"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "exit 1 whose only give-up line is an HTTP 416, after a recovered 503 retry and a local fatal error",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      "Load(<data/0123456789>, 4096, 0) failed: unexpected HTTP response (416): 416 Requested Range Not Satisfiable",
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: synthetic local failure"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // A lost lock as the first visible symptom: the give-up line alone opens the gate.
+    name: "exit 1 whose only gate evidence is a lock give-up with HTTP 500 and a refused endpoint",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.unlockRefused.slice(3, 4),
+      "Save(<lock/0123456789>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: context canceled"}',
+    ),
+    code: "target-check-transport-failed",
   },
   {
     name: "exit 3 with a recovered Rclone upload error and NFS EIO/ESTALE read errors",

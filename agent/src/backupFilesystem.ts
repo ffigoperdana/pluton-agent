@@ -897,10 +897,14 @@ const RESTIC_BACKEND_FINAL_ERROR =
   /unexpected HTTP response \(|error talking HTTP to rclone/;
 /**
  * Restic's retry backend gave up on a backend call (`"%v failed: %v"`,
- * internal/global/global.go); `returned error, retrying` lines are not final.
+ * internal/global/global.go) because the storage answered with an HTTP error.
+ * `returned error, retrying` lines are not final. Restic also gives up at once on
+ * errors it treats as permanent, which are no evidence of an outage: not-exist
+ * (404), a range error (416) and the bridge's `rclone stdio connection already
+ * closed` (the Rclone child died, for example OOM); those never count.
  */
 const RESTIC_BACKEND_GAVE_UP =
-  /^(?:(?:Save|Stat|Remove)\(<[^>]*>\)|Load\(<[^>]*>, \d+, \d+\)|List\([^)]*\)) failed: /;
+  /^(?:(?:Save|Stat|Remove)\(<[^>]*>\)|Load\(<[^>]*>, \d+, \d+\)|List\([^)]*\)) failed: .*unexpected HTTP response \((?!(?:404|416)\))\d+\)/;
 
 /** The message of a Restic JSON `exit_error`; every other JSON line (source errors included) is not storage. */
 function resticExitErrorMessage(line: string): string | undefined {
@@ -920,12 +924,13 @@ function resticExitErrorMessage(line: string): string | undefined {
 
 /**
  * A storage failure only when the run ended because of storage: Restic exited 1
- * (its exit status for every backend failure; 3 is unreadable source files, 10 no
- * repository, 11 an existing lock, 12 a wrong password, 130 interrupted, 2 a Go
- * crash, none a signal or the Agent's deadline) and its decisive final error names
- * the backend, or it gave up on a backend call. Retries Restic recovered from never
- * count on their own. Only then do the storage lines of the bounded tail choose the
- * category (Restic backup stderr also carries source errors).
+ * (Restic 0.19.1 main.go maps every error except unreadable source files (3), no
+ * repository (10), an existing lock (11), a wrong password (12) and cancellation
+ * (130) to 1; 2 is a Go crash; a signal or the Agent's deadline has none) and
+ * either its decisive final error names the backend or it gave up on a backend
+ * call that the storage answered with an HTTP error. Retries Restic recovered from
+ * never count on their own. Only then do the storage lines of the bounded tail
+ * choose the category (Restic backup stderr also carries source errors).
  */
 function classifyBackupStorageFailure(
   diagnostics: string,
