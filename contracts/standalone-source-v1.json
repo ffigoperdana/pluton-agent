@@ -131,6 +131,18 @@
       "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
     },
     {
+      "file": "agent/src/sealedSecrets.test.ts",
+      "extractedSha256": null,
+      "sha256": "463fed7dc2a01cf677e775effb022cdb79db0420d0653a80d92f40252f692ba5",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
+    },
+    {
+      "file": "agent/src/sealedSecrets.ts",
+      "extractedSha256": null,
+      "sha256": "3aacf559fde6611abcceefe0d3e73fa0ef6c4678a9a7e67b415bef0bcf5e573e",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
+    },
+    {
       "file": "agent/src/sourceAccessRuntime.test.ts",
       "extractedSha256": "0836c212459b018515ecd229fc730fb58a9f114e6fe892273a0d64043ee0ec7e",
       "sha256": "4619095d2a63bbe03fea718e949b187b95202db86a95f03684634f261040364a",
