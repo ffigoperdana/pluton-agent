@@ -1768,3 +1768,260 @@ linuxExecutionTest(
     }
   },
 );
+
+for (const scenario of [
+  {
+    name: "an unknown access key",
+    diagnostics:
+      "operation error S3: ListObjectsV2, https response error StatusCode: 403, RequestID: 1, HostID: 2, api error InvalidAccessKeyId: The access key ID you provided does not exist in our records.",
+    code: "target-check-auth-failed",
+  },
+  {
+    name: "a wrong secret key",
+    diagnostics:
+      "operation error S3: ListObjectsV2, https response error StatusCode: 403, RequestID: 1, HostID: 2, api error SignatureDoesNotMatch: The request signature we calculated does not match the signature you provided.",
+    code: "target-check-auth-failed",
+  },
+  {
+    name: "a refused bucket",
+    diagnostics:
+      "operation error S3: ListObjectsV2, https response error StatusCode: 403, RequestID: 1, HostID: 2, api error AccessDenied: Access Denied",
+    code: "target-check-access-failed",
+  },
+  {
+    name: "an untrusted certificate",
+    diagnostics:
+      'Get "https://s3.example.internal/bucket-01?delimiter=%2F": tls: failed to verify certificate: x509: certificate signed by unknown authority',
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a DNS server failure",
+    diagnostics:
+      "lookup s3.example.internal on 192.0.2.53:53: server misbehaving",
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a throttled endpoint",
+    diagnostics:
+      "operation error S3: ListObjectsV2, https response error StatusCode: 503, RequestID: 1, HostID: 2, api error SlowDown: Please reduce your request rate.",
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "an unrecognised provider failure",
+    diagnostics: "synthetic unrecognised provider failure",
+    code: "repository-check-failed",
+  },
+])
+  linuxExecutionTest(
+    `S3: the access check maps ${scenario.name} to ${scenario.code} before Restic runs`,
+    async () => {
+      const providerSecret = "synthetic-provider-secret-marker";
+      const fixture = await createS3ExecutionFixture({
+        accessExit: 1,
+        lsfDiagnostics: `${scenario.diagnostics} ${providerSecret}\n`,
+      });
+      const stages: import("./backupFilesystem.js").BackupFilesystemStageEvent[] =
+        [];
+      try {
+        await assert.rejects(
+          executeFilesystemBackup({
+            ...s3ExecutionInput(fixture),
+            onStage: (event) => stages.push(event),
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof BackupFilesystemError);
+            assert.equal(error.stage, "repository-check");
+            assert.equal(error.code, scenario.code);
+            assert.ok(!JSON.stringify(error).includes(providerSecret));
+            return true;
+          },
+        );
+        assert.equal(
+          (await readCalls(path.join(fixture.dataDir, "rclone.calls"))).filter(
+            (args) => args[0] === "lsf",
+          ).length,
+          1,
+          "One access check, no retry loop",
+        );
+        assert.ok(
+          !existsSync(path.join(fixture.dataDir, "restic-calls")),
+          "Restic must not run after a failed S3 access check.",
+        );
+        assert.ok(
+          stages.some((event) => event.message === "real repository failure"),
+        );
+        for (const forbidden of [providerSecret, "synthetic-secret-key-01"])
+          assert.ok(!JSON.stringify(stages).includes(forbidden));
+        assert.deepEqual(
+          (await readdir(fixture.dataDir)).filter((name) =>
+            name.startsWith("rclone-"),
+          ),
+          [],
+        );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+linuxExecutionTest(
+  "S3: a missing bucket (rclone exit 3) is a repository failure, never an empty target",
+  async () => {
+    const fixture = await createS3ExecutionFixture({
+      accessExit: 3,
+      lsfDiagnostics: "directory not found\n",
+    });
+    try {
+      await assert.rejects(
+        executeFilesystemBackup(s3ExecutionInput(fixture)),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.stage === "repository-check" &&
+          error.code === "repository-check-failed",
+      );
+      assert.ok(!existsSync(path.join(fixture.dataDir, "restic-calls")));
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+linuxExecutionTest(
+  "S3: objects under the prefix refuse initialization; an empty listing initializes",
+  async () => {
+    const occupied = await createS3ExecutionFixture({
+      targetListing: "config\n",
+    });
+    try {
+      await assert.rejects(
+        executeFilesystemBackup(s3ExecutionInput(occupied)),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.stage === "repository-target-check" &&
+          error.code === "repository-target-not-empty",
+      );
+      assert.ok(
+        !(await readCalls(path.join(occupied.dataDir, "restic-calls"))).some(
+          (args) => args.includes("init") || args.includes("backup"),
+        ),
+      );
+    } finally {
+      await rm(occupied.root, { recursive: true, force: true });
+    }
+    const missingBucket = await createS3ExecutionFixture({ targetExit: 3 });
+    try {
+      await assert.rejects(
+        executeFilesystemBackup(s3ExecutionInput(missingBucket)),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.stage === "repository-target-check" &&
+          error.code === "repository-target-check-failed",
+      );
+      assert.ok(
+        !(
+          await readCalls(path.join(missingBucket.dataDir, "restic-calls"))
+        ).some((args) => args.includes("init")),
+      );
+    } finally {
+      await rm(missingBucket.root, { recursive: true, force: true });
+    }
+    const empty = await createS3ExecutionFixture();
+    const stages: string[] = [];
+    try {
+      await executeFilesystemBackup({
+        ...s3ExecutionInput(empty),
+        onStage: (event) => stages.push(`${event.stage}:${event.message}`),
+      });
+      assert.ok(
+        stages.includes("repository-check:storage access check started"),
+      );
+      assert.ok(stages.includes("repository-check:storage access verified"));
+      assert.ok(stages.includes("repository-target-check:target-empty"));
+      assert.ok(!stages.includes("repository-target-check:target-not-found"));
+      assert.equal(
+        (await readCalls(path.join(empty.dataDir, "rclone.calls"))).filter(
+          (args) => args[0] === "lsf",
+        ).length,
+        2,
+      );
+    } finally {
+      await rm(empty.root, { recursive: true, force: true });
+    }
+  },
+);
+
+for (const scenario of [
+  {
+    name: "a refused upload",
+    diagnostics:
+      "rclone: operation error S3: PutObject, https response error StatusCode: 403, RequestID: 1, HostID: 2, api error AccessDenied: Access Denied\nFatal: unable to save snapshot: synthetic\n",
+    code: "target-check-access-failed",
+  },
+  {
+    name: "a rejected key",
+    diagnostics:
+      "rclone: operation error S3: PutObject, https response error StatusCode: 403, RequestID: 1, HostID: 2, api error SignatureDoesNotMatch: The request signature we calculated does not match the signature you provided.\n",
+    code: "target-check-auth-failed",
+  },
+  {
+    name: "a provider error",
+    diagnostics:
+      "rclone: operation error S3: PutObject, https response error StatusCode: 500, RequestID: 1, HostID: 2, api error InternalError: We encountered an internal error.\n",
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "an unclassified failure",
+    diagnostics: "Fatal: unable to save snapshot: synthetic\n",
+    code: "restic-backup-failed",
+  },
+])
+  linuxExecutionTest(
+    `S3: a Restic backup failure from ${scenario.name} becomes ${scenario.code}`,
+    async () => {
+      const fixture = await createS3ExecutionFixture({
+        backupExit: 1,
+        backupDiagnostics: scenario.diagnostics,
+      });
+      try {
+        await assert.rejects(
+          executeFilesystemBackup(s3ExecutionInput(fixture)),
+          (error: unknown) => {
+            assert.ok(error instanceof BackupFilesystemError);
+            assert.equal(error.stage, "restic-backup");
+            assert.equal(error.code, scenario.code);
+            assert.ok(!JSON.stringify(error).includes("RequestID"));
+            return true;
+          },
+        );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+linuxExecutionTest(
+  "S3: SFTP Restic backup failures keep restic-backup-failed",
+  async () => {
+    const fixture = await createExecutionFixture("");
+    await writeFile(
+      path.join(fixture.binDir, "restic"),
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes("cat") && args.includes("config")) console.log(JSON.stringify({ version: 2, id: "c".repeat(64) }));
+else if (args.includes("snapshots")) process.exitCode = 1;
+else if (args.includes("backup")) { process.stderr.write("api error AccessDenied: Access Denied StatusCode: 403\\n"); process.exitCode = 1; }
+`,
+    );
+    try {
+      await assert.rejects(
+        executeFilesystemBackup(executionInput(fixture)),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.stage === "restic-backup" &&
+          error.code === "restic-backup-failed",
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);

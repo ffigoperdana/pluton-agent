@@ -200,6 +200,8 @@ export type BackupFilesystemStageEvent = {
     | "source validated"
     | "temporary storage config created"
     | "repository check started"
+    | "storage access check started"
+    | "storage access verified"
     | "existing backup snapshot lookup started"
     | "initial repository verification started"
     | "repository verified"
@@ -326,6 +328,12 @@ export function toBackupFilesystemError(
             : "repository-check-failed",
     );
   }
+  if (
+    stage === "restic-backup" &&
+    error instanceof ProgramExitError &&
+    error.storageFailure
+  )
+    return new BackupFilesystemError(stage, error.storageFailure);
   const code: BackupFilesystemFailureCode =
     stage === "payload-validation"
       ? "invalid-payload"
@@ -379,6 +387,13 @@ class ProgramTimeoutError extends Error {
   }
 }
 
+/** A classified S3 Restic failure; provider text never leaves runProgram. */
+class ProgramExitError extends Error {
+  constructor(readonly storageFailure?: RepositoryTargetFailureCode) {
+    super("Backup process failed.");
+  }
+}
+
 type RepositoryTargetFailureCode =
   | "target-check-access-failed"
   | "target-check-auth-failed"
@@ -392,12 +407,22 @@ type ProcessOptions = {
   allowFailure?: boolean;
   classifyTargetFailure?: boolean;
   classifyRepositoryFailure?: boolean;
+  /** S3 `restic backup` only: map storage-specific provider text to closed codes. */
+  classifyBackupStorageFailure?: boolean;
   stdin?: string;
   shouldCancel: () => Promise<boolean>;
   onJsonLine?: (value: Record<string, unknown>) => Promise<void>;
   source?: string;
   sourceExcluded?: (relative: string) => boolean;
 };
+
+/** S3 SDK codes for a wrong or revoked key. Checked before 403 access, which they also carry. */
+const S3_AUTHENTICATION_FAILURE = /SignatureDoesNotMatch|InvalidAccessKeyId/;
+/** S3 refusals (AWS SDK v2 "StatusCode: 403", SDK v1 "status code: 403"). */
+const S3_ACCESS_FAILURE = /\bAccessDenied\b|status ?code: 403\b/i;
+/** Text only a storage transport produces: TCP/SSH, DNS, TLS, HTTP client timeouts and S3 5xx. */
+const STORAGE_TRANSPORT_FAILURE =
+  /dial tcp|connection refused|connection reset|connection closed|i\/o timeout|connection timed out|broken pipe|no route to host|network is unreachable|no such host|server misbehaving|x509: |tls: |TLS handshake timeout|Client\.Timeout exceeded|status ?code: 5\d\d\b|api error (?:InternalError|ServiceUnavailable|SlowDown)\b|(?:^|[\s:])(?:unexpected )?EOF(?:\s|$)/i;
 
 function repositoryDiagnostic(
   code: number | null,
@@ -407,11 +432,15 @@ function repositoryDiagnostic(
     code === 12 ||
     /wrong password|no key found|unable to authenticate|authentication failed|failed to authenticate|ssh: handshake failed.*authenticate/i.test(
       diagnostics,
-    )
+    ) ||
+    S3_AUTHENTICATION_FAILURE.test(diagnostics)
   )
     return "authentication-failed";
   if (
-    /permission denied|access denied|operation not permitted/i.test(diagnostics)
+    /permission denied|access denied|operation not permitted/i.test(
+      diagnostics,
+    ) ||
+    S3_ACCESS_FAILURE.test(diagnostics)
   )
     return "access-failed";
   if (classifyTargetFailure(diagnostics) === "target-check-transport-failed")
@@ -806,24 +835,34 @@ function classifyTargetFailure(
   if (
     /unable to authenticate|authentication failed|no supported methods remain|permission denied \((?:publickey|password|keyboard-interactive)/i.test(
       diagnostics,
-    )
+    ) ||
+    S3_AUTHENTICATION_FAILURE.test(diagnostics)
   ) {
     return "target-check-auth-failed";
   }
   if (
     /permission denied|access denied|SSH_FX_PERMISSION_DENIED|operation not permitted/i.test(
       diagnostics,
-    )
+    ) ||
+    S3_ACCESS_FAILURE.test(diagnostics)
   ) {
     return "target-check-access-failed";
   }
-  if (
-    /dial tcp|connection refused|connection reset|connection closed|i\/o timeout|connection timed out|broken pipe|no route to host|network is unreachable|no such host|(?:^|[\s:])(?:unexpected )?EOF(?:\s|$)/i.test(
-      diagnostics,
-    )
-  ) {
+  if (STORAGE_TRANSPORT_FAILURE.test(diagnostics)) {
     return "target-check-transport-failed";
   }
+  return undefined;
+}
+
+/** Restic backup stderr also carries source errors, so only storage-specific provider text is classified. */
+function classifyBackupStorageFailure(
+  diagnostics: string,
+): RepositoryTargetFailureCode | undefined {
+  if (S3_AUTHENTICATION_FAILURE.test(diagnostics))
+    return "target-check-auth-failed";
+  if (S3_ACCESS_FAILURE.test(diagnostics)) return "target-check-access-failed";
+  if (STORAGE_TRANSPORT_FAILURE.test(diagnostics))
+    return "target-check-transport-failed";
   return undefined;
 }
 
@@ -987,7 +1026,11 @@ async function runProgram(
     child.stderr.on("data", (chunk) => {
       // Target/repository probes use only a bounded in-memory classifier.
       // Raw provider text is never returned, logged, or forwarded to the server.
-      if (options.classifyTargetFailure || options.classifyRepositoryFailure) {
+      if (
+        options.classifyTargetFailure ||
+        options.classifyRepositoryFailure ||
+        options.classifyBackupStorageFailure
+      ) {
         diagnostics = appendBounded(diagnostics, String(chunk));
       }
       if (options.source) {
@@ -1016,6 +1059,10 @@ async function runProgram(
           if (statusFailure) return reject(statusFailure);
           if (cancelled) return reject(new BackupCancelledError());
           if (timedOut) {
+            if (options.classifyBackupStorageFailure)
+              return reject(
+                new ProgramExitError(classifyBackupStorageFailure(diagnostics)),
+              );
             const reason = options.classifyRepositoryFailure
               ? repositoryDiagnostic(code, diagnostics)
               : undefined;
@@ -1038,9 +1085,13 @@ async function runProgram(
                 ),
               );
             return reject(
-              new Error(
-                `Backup process exited with status ${code ?? "unknown"}.`,
-              ),
+              options.classifyBackupStorageFailure
+                ? new ProgramExitError(
+                    classifyBackupStorageFailure(diagnostics),
+                  )
+                : new Error(
+                    `Backup process exited with status ${code ?? "unknown"}.`,
+                  ),
             );
           }
           resolve({
@@ -1118,6 +1169,54 @@ async function verifyRepository(
             : "repository-check-failed",
     );
   }
+}
+
+/**
+ * S3 credentials and reachability, checked by Rclone directly before Restic:
+ * Restic's Rclone bridge (`rclone serve restic`) turns provider errors into
+ * plain HTTP statuses. A missing prefix lists as empty with exit 0; any other
+ * exit, including 3 (missing bucket), fails without a retry loop.
+ */
+async function checkS3RepositoryAccess(
+  rclone: string,
+  target: string,
+  env: NodeJS.ProcessEnv,
+  shouldCancel: () => Promise<boolean>,
+  diagnostic: (reason: RepositoryDiagnostic) => void,
+): Promise<void> {
+  let reason: RepositoryDiagnostic | undefined;
+  try {
+    const result = await runProgram(rclone, ["lsf", target], {
+      env,
+      shouldCancel,
+      timeoutMs: 30_000,
+      allowFailure: true,
+      classifyRepositoryFailure: true,
+    });
+    if (result.code === 0) return;
+    reason = result.repositoryFailure;
+  } catch (error) {
+    if (
+      error instanceof BackupCancelledError ||
+      error instanceof CommandStatusError
+    )
+      throw error;
+    reason =
+      error instanceof ProgramTimeoutError
+        ? error.diagnostic || "timeout"
+        : "process-failed";
+  }
+  diagnostic(reason || "process-failed");
+  throw new BackupFilesystemError(
+    "repository-check",
+    reason === "authentication-failed"
+      ? "target-check-auth-failed"
+      : reason === "access-failed"
+        ? "target-check-access-failed"
+        : reason === "transport-failed" || reason === "timeout"
+          ? "target-check-transport-failed"
+          : "repository-check-failed",
+  );
 }
 
 function rcloneConfigValue(value: string): string {
@@ -1278,7 +1377,12 @@ async function ensureManagedRepository(
   // Rclone reserves exit code 3 for fs.ErrorDirNotFound. Do not infer absence
   // from free-form "not found" text (e.g. a missing config or SSH key), exit
   // code 4 (file not found), or any authentication/access/transport failure.
-  const missingTarget = listing.code === 3 && !listing.targetFailureCode;
+  // S3 has no directories: a missing prefix lists as empty with exit 0, and
+  // exit 3 means the bucket itself is missing, which never permits init.
+  const missingTarget =
+    payload.rclone.type === "sftp" &&
+    listing.code === 3 &&
+    !listing.targetFailureCode;
   if (listing.code !== 0 && !missingTarget) {
     throw new BackupFilesystemError(
       "repository-target-check",
@@ -1780,6 +1884,28 @@ export async function executeFilesystemBackup(input: {
       stage: "repository-check",
       message: "repository check started",
     });
+    if (payload.rclone.type === "s3") {
+      emitStage({
+        stage: "repository-check",
+        message: "storage access check started",
+      });
+      await checkS3RepositoryAccess(
+        rclone,
+        `${payload.repository.remoteName}:${payload.repository.path}`,
+        rcloneEnv,
+        input.shouldCancel,
+        (diagnostic) =>
+          emitStage({
+            stage: "repository-check",
+            message: "real repository failure",
+            diagnostic,
+          }),
+      );
+      emitStage({
+        stage: "repository-check",
+        message: "storage access verified",
+      });
+    }
     emitStage({
       stage: "repository-check",
       message: "existing backup snapshot lookup started",
@@ -2039,6 +2165,7 @@ export async function executeFilesystemBackup(input: {
     await runProgram(restic, args, {
       env,
       source,
+      classifyBackupStorageFailure: payload.rclone.type === "s3",
       ...(usesVersion4SourceRules(payload)
         ? {
             sourceExcluded: compileBackupExclusions([
