@@ -209,10 +209,14 @@ a sealed field that does not open is `payload-validation`/`invalid-payload`, wit
 nothing written first.
 
 When `restic backup` itself fails on S3, the stage is `restic-backup`. A storage
-code is reported only when the run ended because of storage: Restic exited with
-status 1 and its final error names the storage backend (`unexpected HTTP
-response (…)` or `error talking HTTP to rclone`), or Restic gave up on a backend
-call (`Save(<…>) failed: …`, also `Load`, `Stat`, `Remove`, `List`). Only then is
+code is reported only when the run ended because of storage, which needs both:
+Restic exited with status 1, and either its final error names the storage
+backend (`unexpected HTTP response (…)` or `error talking HTTP to rclone`) or
+Restic gave up on a backend call that the storage answered with an HTTP error
+(`Save(<…>) failed: unexpected HTTP response (500)…`, also `Load`, `Stat`,
+`Remove`, `List`; not 404 or 416, and not `rclone stdio connection already
+closed`, which Restic gives up on at once). A give-up line never counts without
+exit status 1. Only then is
 the code chosen from the storage lines in the last 64 KB of Restic's output:
 `rclone:` lines (the only lines with the provider's text), Restic backend call
 lines and the final error. Per-file source errors (JSON `message_type` `error`, or
