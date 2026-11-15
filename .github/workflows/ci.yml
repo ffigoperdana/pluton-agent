@@ -25,7 +25,10 @@ jobs:
       fail-fast: false
       matrix:
         ubuntu: ['22.04', '24.04']
-    timeout-minutes: 30
+    # The post-dump lab case s3-fails-during-upload waits for Restic's own
+    # backend retries to give up (about 20 to 35 minutes, no Restic option
+    # bounds it), so the whole job needs more than the old 30 minutes.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       # Agent-only build context. No production services, host mounts or privileged Docker.
