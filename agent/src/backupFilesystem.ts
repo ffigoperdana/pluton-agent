@@ -854,41 +854,85 @@ function classifyTargetFailure(
   return undefined;
 }
 
+/** Keeps the last `limit` characters: the decisive final error of a long run. */
+function appendTail(
+  existing: string,
+  chunk: string,
+  limit = MAX_OUTPUT_BYTES,
+): string {
+  const combined = existing + chunk;
+  return combined.length > limit
+    ? combined.slice(combined.length - limit)
+    : combined;
+}
+
 /**
- * Marker lists follow Restic's documented line shapes as used by the existing tests
- * (backend operation lines `Save(<...>)`/`Load(<...>)`, `Fatal:` lines, and per-file source
- * errors as `error: ...`). They were not verified against the Restic 0.19.1 source.
- * Unrecognised lines are ignored, so the failure falls back to `restic-backup-failed`.
+ * Restic 0.19.1 `backup --json` stderr through its Rclone backend, as captured
+ * against Rclone 1.75.1 `serve s3` (docs/S3_REPOSITORY.md):
+ * - per-file source errors: `{"message_type":"error","error":{"message":...},"during":"scan"|"archival","item":...}`;
+ * - the final error: `{"message_type":"exit_error","code":N,"message":"Fatal: ..."}`
+ *   (`Fatal: ...` in text mode);
+ * - backend retries in plain text: `Save(<data/0123456789>) returned error, retrying after 1s: ...`,
+ *   `... failed: ...` when Restic gives up (also `Load(<`, `Stat(<`, `Remove(<`, `List(`);
+ * - Rclone's own stderr, prefixed `rclone: `, which alone carries the provider text
+ *   (the bridge answers Restic with a bare HTTP 500).
  *
- * Source read lines: every `error: ` line (Restic prints per-file errors this way, with
- * absolute paths or paths relative to the job workspace for database dump artifacts), plus
- * Go-wrapped `open`/`lstat`/`read`/`readdir` lines and `cannot read` messages.
+ * Text-mode source lines: `error: ...`, Go-wrapped `open`/`lstat`/`read`/`readdir`
+ * lines and `cannot read` messages, with absolute or job-relative paths.
  */
 const BACKUP_SOURCE_READ_LINE =
   /^(?:error: |(?:open|lstat|read|readdir|Lstat) |.*\bcan(?:not| not) read\b)/;
 /** Rclone stderr forwarded by Restic. Always storage, even if it also matches a source pattern. */
 const BACKUP_RCLONE_LINE = /^rclone: /;
-/**
- * Backend context for any other line: Restic backend calls, repository open, lock and
- * snapshot-save failures, and `Fatal:` lines. Provider text on such a line is then classified.
- */
+/** Restic backend calls and text-mode fatal errors, anchored so file names never match. */
 const BACKUP_BACKEND_CONTEXT_LINE =
-  /^Fatal: |\b(?:Save|Load|Stat|Remove)\(<|\bList\(|unable to open repository|unable to create lock|unable to save snapshot/;
+  /^(?:Fatal: |(?:Save|Load|Stat|Remove)\(<|List\()/;
 
-/** Restic backup stderr also carries source errors, so only lines from the storage path are classified. */
+/** The message of a Restic JSON `exit_error`; every other JSON line (source errors included) is not storage. */
+function resticExitErrorMessage(line: string): string | undefined {
+  try {
+    const record = JSON.parse(line) as {
+      message_type?: unknown;
+      message?: unknown;
+    } | null;
+    return record?.message_type === "exit_error" &&
+      typeof record.message === "string"
+      ? record.message
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Restic backup stderr also carries source errors, so only lines from the storage
+ * path are classified, from the bounded tail. Exit 3 (snapshot saved, source files
+ * unreadable) is never a storage failure, whatever retries Rclone printed earlier.
+ */
 function classifyBackupStorageFailure(
   diagnostics: string,
+  code: number | null,
+  trimmed = false,
 ): RepositoryTargetFailureCode | undefined {
-  const storage = diagnostics
-    .split(/\r\n|\r|\n/)
-    .map((line) => line.trim())
-    .filter(
-      (line) =>
-        BACKUP_RCLONE_LINE.test(line) ||
-        (!BACKUP_SOURCE_READ_LINE.test(line) &&
-          BACKUP_BACKEND_CONTEXT_LINE.test(line)),
+  if (code === 3) return undefined;
+  const lines = diagnostics.split(/\r\n|\r|\n/);
+  // A tail cut mid-line could turn part of a JSON source record into a plain line.
+  if (trimmed) lines.shift();
+  const candidates: string[] = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line.startsWith("{")) {
+      const message = resticExitErrorMessage(line);
+      if (message !== undefined && !BACKUP_SOURCE_READ_LINE.test(message))
+        candidates.push(message);
+    } else if (
+      BACKUP_RCLONE_LINE.test(line) ||
+      (!BACKUP_SOURCE_READ_LINE.test(line) &&
+        BACKUP_BACKEND_CONTEXT_LINE.test(line))
     )
-    .join("\n");
+      candidates.push(line);
+  }
+  const storage = candidates.join("\n");
   if (S3_AUTHENTICATION_FAILURE.test(storage))
     return "target-check-auth-failed";
   if (S3_ACCESS_FAILURE.test(storage)) return "target-check-access-failed";
@@ -970,6 +1014,9 @@ async function runProgram(
     });
     let stdout = "";
     let diagnostics = "";
+    // S3 `restic backup` only: the tail, where Restic prints its decisive final error.
+    let backupDiagnostics = "";
+    let backupDiagnosticsTrimmed = false;
     let stdoutBuffer = "";
     let stderrBuffer = "";
     let sourceFailure: SourceAccessCode | undefined;
@@ -1057,12 +1104,14 @@ async function runProgram(
     child.stderr.on("data", (chunk) => {
       // Target/repository probes use only a bounded in-memory classifier.
       // Raw provider text is never returned, logged, or forwarded to the server.
-      if (
-        options.classifyTargetFailure ||
-        options.classifyRepositoryFailure ||
-        options.classifyBackupStorageFailure
-      ) {
+      if (options.classifyTargetFailure || options.classifyRepositoryFailure) {
         diagnostics = appendBounded(diagnostics, String(chunk));
+      }
+      if (options.classifyBackupStorageFailure) {
+        const text = String(chunk);
+        backupDiagnosticsTrimmed ||=
+          backupDiagnostics.length + text.length > MAX_OUTPUT_BYTES;
+        backupDiagnostics = appendTail(backupDiagnostics, text);
       }
       if (options.source) {
         stderrBuffer = appendBounded(stderrBuffer, String(chunk));
@@ -1092,7 +1141,13 @@ async function runProgram(
           if (timedOut) {
             if (options.classifyBackupStorageFailure)
               return reject(
-                new ProgramExitError(classifyBackupStorageFailure(diagnostics)),
+                new ProgramExitError(
+                  classifyBackupStorageFailure(
+                    backupDiagnostics,
+                    null,
+                    backupDiagnosticsTrimmed,
+                  ),
+                ),
               );
             const reason = options.classifyRepositoryFailure
               ? repositoryDiagnostic(code, diagnostics)
@@ -1105,6 +1160,18 @@ async function runProgram(
           }
           consumeSourceLine(stderrBuffer);
           if ((code !== 0 || sourceFailure) && !options.allowFailure) {
+            // A fatal S3 storage failure is why the backup stopped, even when source
+            // files were also unreadable; exit 0 and exit 3 never reach storage codes.
+            const storageFailure =
+              options.classifyBackupStorageFailure && code !== 0
+                ? classifyBackupStorageFailure(
+                    backupDiagnostics,
+                    code,
+                    backupDiagnosticsTrimmed,
+                  )
+                : undefined;
+            if (storageFailure)
+              return reject(new ProgramExitError(storageFailure));
             if (sourceFailure)
               return reject(
                 new SourceAccessError(
@@ -1117,9 +1184,7 @@ async function runProgram(
               );
             return reject(
               options.classifyBackupStorageFailure
-                ? new ProgramExitError(
-                    classifyBackupStorageFailure(diagnostics),
-                  )
+                ? new ProgramExitError()
                 : new Error(
                     `Backup process exited with status ${code ?? "unknown"}.`,
                   ),

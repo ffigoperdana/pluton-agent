@@ -1518,7 +1518,7 @@ appendFileSync(path.join(state, "restic.env"), JSON.stringify({ SSL_CERT_FILE: p
 if (args.includes("cat") && args.includes("config")) console.log(JSON.stringify({ version: 2, id: "c".repeat(64) }));
 else if (args.includes("snapshots")) process.exitCode = 10;
 else if (args.includes("backup")) {
-  process.stderr.write(${JSON.stringify(options.backupDiagnostics ?? "")});
+  process.stderr.write(${JSON.stringify((options.backupDiagnostics ?? "").replaceAll("@SOURCE@", source))});
   if (${options.backupExit ?? 0} !== 0) process.exitCode = ${options.backupExit ?? 0};
   else process.stdout.write(JSON.stringify({ message_type: "summary", snapshot_id: "abcdef0123456789", files_new: 0, files_changed: 0, files_unmodified: 0, dirs_new: 0, dirs_changed: 0, dirs_unmodified: 0, data_blobs: 0, tree_blobs: 0, data_added: 0, data_added_packed: 0, total_files_processed: 0, total_bytes_processed: 0, total_duration: 0 }) + "\\n");
 }
@@ -2100,6 +2100,224 @@ for (const scenario of [
               "bucket-01",
               "0123456789",
               "AccessDenied-status",
+            ])
+              assert.ok(!text.includes(leaked), leaked);
+            return true;
+          },
+        );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+/**
+ * Real `restic backup --json` stderr shapes (Restic 0.19.1 through its Rclone
+ * backend, Rclone 1.75.1 `serve s3` over HTTPS), captured in the Ubuntu
+ * validation image (docs/S3_REPOSITORY.md). Paths, object names, hosts and
+ * buckets are replaced by synthetic values; `@SOURCE@` is the fixture source.
+ * The ESTALE line reuses the captured EIO shape with Go's ESTALE text.
+ */
+const CAPTURED = {
+  sourcePermissionDenied: [
+    '{"message_type":"error","error":{"message":"openfile for readdirnames failed: open @SOURCE@/app/locked-dir: permission denied"},"during":"scan","item":"@SOURCE@/app/locked-dir"}',
+    '{"message_type":"error","error":{"message":"open @SOURCE@/app/unreadable.txt: permission denied"},"during":"archival","item":"@SOURCE@/app/unreadable.txt"}',
+  ],
+  sourceReadFailures: [
+    '{"message_type":"error","error":{"message":"failed to save @SOURCE@/nfs/report.dat: read @SOURCE@/nfs/report.dat: input/output error"},"during":"archival","item":"@SOURCE@/nfs/report.dat"}',
+    '{"message_type":"error","error":{"message":"failed to save @SOURCE@/nfs/ledger.dat: read @SOURCE@/nfs/ledger.dat: stale NFS file handle"},"during":"archival","item":"@SOURCE@/nfs/ledger.dat"}',
+  ],
+  partialExit:
+    '{"message_type":"exit_error","code":3,"message":"Warning: at least one source file could not be read"}',
+  uploadRetried503: [
+    "rclone: 2026/11/15 17:03:07 ERROR : data/01/0123456789abcdef: Post request put error: operation error S3: PutObject, exceeded maximum number of attempts, 1, https response error StatusCode: 503, RequestID: 1, HostID: , api error ServiceUnavailable: Service Unavailable",
+    "rclone: 2026/11/15 17:03:07 ERROR : data/01/0123456789abcdef: Post request rcat error: operation error S3: PutObject, exceeded maximum number of attempts, 1, https response error StatusCode: 503, RequestID: 1, HostID: , api error ServiceUnavailable: Service Unavailable",
+    "Save(<data/0123456789>) returned error, retrying after 1.207734412s: unexpected HTTP response (500): 500 Internal Server Error",
+  ],
+  uploadRetried403: [
+    "rclone: 2026/11/15 17:03:06 ERROR : data/01/0123456789abcdef: Post request put error: operation error S3: PutObject, https response error StatusCode: 403, RequestID: 1, HostID: , api error AccessDenied: Access Denied",
+    "rclone: 2026/11/15 17:03:06 ERROR : data/01/0123456789abcdef: Post request rcat error: operation error S3: PutObject, https response error StatusCode: 403, RequestID: 1, HostID: , api error AccessDenied: Access Denied",
+    "Save(<data/0123456789>) returned error, retrying after 904.774335ms: unexpected HTTP response (500): 500 Internal Server Error",
+  ],
+  uploadRefused: [
+    'rclone: 2026/11/15 17:16:34 ERROR : data/01/0123456789abcdef: Post request put error: operation error S3: PutObject, exceeded maximum number of attempts, 1, https response error StatusCode: 0, RequestID: , HostID: , request send failed, Put "https://s3.example.internal/bucket-01/managed/app-01/data/01/0123456789abcdef?x-id=PutObject": dial tcp 192.0.2.10:443: connect: connection refused',
+    'rclone: 2026/11/15 17:16:34 ERROR : data/01/0123456789abcdef: Post request rcat error: operation error S3: PutObject, exceeded maximum number of attempts, 1, https response error StatusCode: 0, RequestID: , HostID: , request send failed, Put "https://s3.example.internal/bucket-01/managed/app-01/data/01/0123456789abcdef?x-id=PutObject": dial tcp 192.0.2.10:443: connect: connection refused',
+    "Save(<data/0123456789>) returned error, retrying after 51.37068246s: unexpected HTTP response (500): 500 Internal Server Error",
+  ],
+  uploadGaveUp:
+    "Save(<data/0123456789>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+  // After the pack upload gave up: lock refresh, unlock retries, then the final error.
+  unlockRefused: [
+    "Save(<lock/0123456789>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+    "unable to refresh lock: unexpected HTTP response (500): 500 Internal Server Error",
+    "Remove(<lock/0123456789>) returned error, retrying after 1.361621548s: unexpected HTTP response (500): 500 Internal Server Error",
+    'rclone: 2026/11/15 17:23:05 ERROR : locks/0123456789abcdef: Delete request remove error: operation error S3: DeleteObject, https response error StatusCode: 0, RequestID: , HostID: , request send failed, Delete "https://s3.example.internal/bucket-01/managed/app-01/locks/0123456789abcdef?x-id=DeleteObject": dial tcp 192.0.2.10:443: connect: connection refused',
+    "rclone: failed to get rate limit token, retry quota exceeded, 0 available, 5 requested",
+    "Remove(<lock/0123456789>) returned error, retrying after 1m27.374364306s: unexpected HTTP response (500): 500 Internal Server Error",
+    "error while unlocking: context canceled",
+  ],
+  unlockDenied: [
+    "Save(<lock/0123456789>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+    "unable to refresh lock: unexpected HTTP response (500): 500 Internal Server Error",
+    "rclone: 2026/11/15 17:23:04 ERROR : locks/0123456789abcdef: Delete request remove error: operation error S3: DeleteObject, https response error StatusCode: 403, RequestID: 1, HostID: , api error AccessDenied: Access Denied",
+    "Remove(<lock/0123456789>) returned error, retrying after 1m18.23016133s: unexpected HTTP response (500): 500 Internal Server Error",
+    "error while unlocking: context canceled",
+  ],
+  repositoryOpenTimedOut:
+    '{"message_type":"exit_error","code":1,"message":"Fatal: unable to open repository at rclone:pluton:bucket-01/managed/app-01: error talking HTTP to rclone: Get \\"http://localhost/file-0123456789\\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"}',
+  wrongKey: [
+    "Stat(<config/>) returned error, retrying after 904.774335ms: unexpected HTTP response (500): 500 Internal Server Error",
+    "Stat(<config/>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+    '{"message_type":"exit_error","code":1,"message":"Fatal: unable to open config file: unexpected HTTP response (500): 500 Internal Server Error\\nrclone:pluton:bucket-01/managed/app-01"}',
+  ],
+};
+const STORAGE_GAVE_UP_EXIT =
+  '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: unexpected HTTP response (500): 500 Internal Server Error"}';
+const lines = (...parts: (string | string[])[]) =>
+  `${parts.flat().join("\n")}\n`;
+
+for (const scenario of [
+  {
+    name: "exit 3 with a recovered Rclone upload error and NFS EIO/ESTALE read errors",
+    exit: 3,
+    diagnostics: lines(
+      CAPTURED.uploadRetried503,
+      CAPTURED.sourceReadFailures,
+      CAPTURED.partialExit,
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "exit 3 with a recovered Rclone access error and permission-denied source errors",
+    exit: 3,
+    diagnostics: lines(
+      CAPTURED.uploadRetried403,
+      CAPTURED.sourcePermissionDenied,
+      CAPTURED.partialExit,
+    ),
+    code: "source-entry-inaccessible",
+  },
+  {
+    name: "a JSON source error whose path and message look like storage lines",
+    exit: 1,
+    diagnostics: lines(
+      '{"message_type":"error","error":{"message":"read @SOURCE@/nfs/Price List(2024).xlsx: connection timed out"},"during":"archival","item":"@SOURCE@/nfs/Price List(2024).xlsx"}',
+      '{"message_type":"error","error":{"message":"read @SOURCE@/nfs/Save(<draft>) api error AccessDenied.txt: connection reset by peer"},"during":"archival","item":"@SOURCE@/nfs/Save(<draft>) api error AccessDenied.txt"}',
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: synthetic local failure"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "a refused endpoint until Restic gave up (exit_error)",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.uploadRefused,
+      CAPTURED.uploadGaveUp,
+      CAPTURED.unlockRefused,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a fatal storage failure after permission-denied source errors",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.sourcePermissionDenied,
+      CAPTURED.uploadRefused,
+      CAPTURED.uploadGaveUp,
+      CAPTURED.unlockRefused,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "uploads refused with 403 until Restic gave up",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.uploadRetried403,
+      CAPTURED.uploadGaveUp,
+      CAPTURED.unlockDenied,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-access-failed",
+  },
+  {
+    name: "uploads answered 503 until Restic gave up",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.uploadRetried503,
+      CAPTURED.uploadGaveUp,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "only the JSON exit_error of a repository open that timed out",
+    exit: 1,
+    diagnostics: lines(CAPTURED.repositoryOpenTimedOut),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a rejected key hidden by the Rclone bridge (Stat retries, no provider text)",
+    exit: 1,
+    diagnostics: lines(CAPTURED.wrongKey),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "more than 64 KB of source read errors before the decisive storage failure",
+    exit: 1,
+    diagnostics: lines(
+      Array.from({ length: 600 }, () => CAPTURED.sourceReadFailures).flat(),
+      CAPTURED.uploadRefused,
+      CAPTURED.uploadGaveUp,
+      CAPTURED.unlockRefused,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "an early recovered 403 retry and over 64 KB of source read errors before a decisive refused endpoint",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.uploadRetried403,
+      Array.from({ length: 600 }, () => CAPTURED.sourceReadFailures).flat(),
+      CAPTURED.uploadRefused,
+      CAPTURED.uploadGaveUp,
+      CAPTURED.unlockRefused,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-transport-failed",
+  },
+])
+  linuxExecutionTest(
+    `S3: captured Restic 0.19.1 JSON output with ${scenario.name} reports ${scenario.code}`,
+    async () => {
+      const fixture = await createS3ExecutionFixture({
+        backupExit: scenario.exit,
+        backupDiagnostics: scenario.diagnostics,
+      });
+      try {
+        await assert.rejects(
+          executeFilesystemBackup({
+            ...s3ExecutionInput(fixture),
+            payload: {
+              ...s3Version5Payload,
+              sourcePath: fixture.source,
+              sourceDiagnosticsVersion: 1,
+            },
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof BackupFilesystemError);
+            assert.equal(error.stage, "restic-backup");
+            assert.equal(error.code, scenario.code);
+            const text = JSON.stringify(error);
+            for (const leaked of [
+              "example.internal",
+              "192.0.2.",
+              "bucket-01",
+              "0123456789",
+              "Price List",
+              "AccessDenied",
             ])
               assert.ok(!text.includes(leaked), leaked);
             return true;
