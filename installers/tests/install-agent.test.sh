@@ -215,6 +215,11 @@ test_storage_ca_configuration() {
 	if run_installer "$root" --server https://pluton.example.internal --allowed-root "$root/source" --storage-ca-file "$root/link.pem" >/dev/null 2>&1; then
 		fail 'A symbolic-link storage CA path was accepted.'
 	fi
+	root="$(make_root storage-ca-control)"
+	printf 'synthetic-storage-ca' > "$root/ca"$'	'"x.pem"
+	if run_installer "$root" --server https://pluton.example.internal --allowed-root "$root/source" --storage-ca-file "$root/ca"$'	'"x.pem" >/dev/null 2>&1; then
+		fail 'A storage CA path with control characters was accepted.'
+	fi
 }
 
 test_platform_rejections() {

@@ -400,6 +400,7 @@ preserve_existing_optional_config() {
 # The Agent itself re-checks root ownership of the whole path at backup time.
 validate_storage_ca_file() {
 	[[ -n "$STORAGE_CA_FILE" ]] || return 0
+	[[ "$STORAGE_CA_FILE" != *[[:cntrl:]]* ]] || fail '--storage-ca-file must not contain control characters.'
 	[[ "$STORAGE_CA_FILE" == /* && -f "$STORAGE_CA_FILE" && ! -L "$STORAGE_CA_FILE" && -r "$STORAGE_CA_FILE" ]] || fail '--storage-ca-file must be an existing readable absolute PEM file, not a symbolic link.'
 	if is_test_mode; then return 0; fi
 	[[ "$(stat -c '%u' -- "$STORAGE_CA_FILE")" == 0 ]] || fail '--storage-ca-file must be owned by root.'

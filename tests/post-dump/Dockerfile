@@ -23,6 +23,7 @@ COPY --from=standalone-tools /opt/pluton-agent/bin/restic /usr/local/bin/restic
 COPY --from=standalone-tools /opt/pluton-agent/bin/rclone /usr/local/bin/rclone
 COPY --from=standalone-tools /workspace/agent/dist /app/agent/dist
 COPY --from=standalone-tools /workspace/agent/package.json /app/agent/package.json
+# The Agent refuses a storage CA file that is not root-owned, so the lab CA stays root-owned.
 COPY --from=fixture-tls --chown=0:0 /tmp/fixture-tls/ca.pem /app/fixture-tls/ca.pem
 COPY --from=fixture-tls --chown=10001:10001 /tmp/fixture-tls/server.pem /tmp/fixture-tls/server-key.pem /app/fixture-tls-server/
 COPY tests/post-dump /app/tests/post-dump
