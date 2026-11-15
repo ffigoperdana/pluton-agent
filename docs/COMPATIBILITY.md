@@ -39,6 +39,7 @@ timeouts; TLS and authorization refusals remain terminal.
 | Pairing/function                        | Status and boundary                                                                                                                             |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent 0.7.0 + extracted server revision | Protocol/HMAC/exclusion golden vectors checked; synthetic TLS enrollment/heartbeat tested on Ubuntu; real deployed pairing NOT TESTED           |
+| Agent 0.8.0 + stage 1 server            | Sealing vector (`contracts/v0.8.0.json`) checked on both sides; Agent side tested against synthetic SFTP and S3 fixtures; real deployed pairing NOT TESTED |
 | Server-Managed Source Access            | Existing host delegation, modes/version 1, revision/apply/lease/receipt checks preserved; server must support them                              |
 | Filesystem envelopes 1–5                | 1–4 unchanged and SFTP-only; 5 adds S3 and sealed secrets for Agents that advertise `backupPayloadVersion: 5`; unknown versions/fields refuse |
 | Database/hooks lifecycle versions 1/2   | Existing engines, multiple DB limits, root-owned tools and constrained hooks unchanged; real DB integration NOT TESTED by the synthetic fixture |

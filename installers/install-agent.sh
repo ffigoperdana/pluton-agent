@@ -396,7 +396,8 @@ preserve_existing_optional_config() {
 }
 
 # The Agent passes this bundle to Restic and Rclone as SSL_CERT_FILE for S3
-# repositories only; it replaces the system trust store for those connections.
+# repositories only. Go still loads /etc/ssl/certs, so it adds the operator CA
+# and does not narrow trust.
 # The Agent itself re-checks root ownership of the whole path at backup time.
 validate_storage_ca_file() {
 	[[ -n "$STORAGE_CA_FILE" ]] || return 0
