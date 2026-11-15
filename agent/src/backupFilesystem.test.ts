@@ -2023,6 +2023,22 @@ for (const scenario of [
     code: "restic-backup-failed",
   },
   {
+    name: "a relative artifact path with storage-looking text",
+    diagnostics:
+      "error: dump/s3.backup.sql: read dump/s3.backup.sql: i/o timeout\nerror: dump/HTTP-api error.sql: read dump/HTTP-api error.sql: connection timed out\nerror: dump/api error AccessDenied.sql: EOF\n",
+    code: "restic-backup-failed",
+  },
+  {
+    name: "an rclone line that also says cannot read",
+    diagnostics: "rclone: Failed to copy: cannot read response: i/o timeout\n",
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "broad markers without backend context",
+    diagnostics: "warning: s3.example.internal HTTP api error i/o timeout\n",
+    code: "restic-backup-failed",
+  },
+  {
     name: "a Rclone transport line",
     diagnostics:
       'rclone: Failed to copy: Put "https://s3.example.internal/bucket-01/data": read tcp 192.0.2.10:1->192.0.2.11:443: i/o timeout\n',

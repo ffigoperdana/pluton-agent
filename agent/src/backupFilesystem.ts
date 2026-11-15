@@ -855,20 +855,25 @@ function classifyTargetFailure(
 }
 
 /**
- * Restic backup stderr lines that are source read errors (a network-mounted source can
- * time out or reset like a storage transport). Restic prints them as `error: <abs path>: ...`
- * and Go wraps the failing call (`open`, `lstat`, `read`, `readdir`) in the message.
- * These lines are dropped before any storage pattern is tried.
+ * Marker lists follow Restic's documented line shapes as used by the existing tests
+ * (backend operation lines `Save(<...>)`/`Load(<...>)`, `Fatal:` lines, and per-file source
+ * errors as `error: ...`). They were not verified against the Restic 0.19.1 source.
+ * Unrecognised lines are ignored, so the failure falls back to `restic-backup-failed`.
+ *
+ * Source read lines: every `error: ` line (Restic prints per-file errors this way, with
+ * absolute paths or paths relative to the job workspace for database dump artifacts), plus
+ * Go-wrapped `open`/`lstat`/`read`/`readdir` lines and `cannot read` messages.
  */
 const BACKUP_SOURCE_READ_LINE =
-  /^(?:error: (?:\/|[A-Za-z]:[\\/])|(?:open|lstat|read|readdir|Lstat) |.*\bcan(?:not| not) read\b)/;
+  /^(?:error: |(?:open|lstat|read|readdir|Lstat) |.*\bcan(?:not| not) read\b)/;
+/** Rclone stderr forwarded by Restic. Always storage, even if it also matches a source pattern. */
+const BACKUP_RCLONE_LINE = /^rclone: /;
 /**
- * Lines that clearly come from the storage path: Rclone stderr forwarded by Restic
- * (`rclone: ` prefix), Restic backend calls (`Save(<`, `Load(<`, `Stat(<`, `Remove(<`,
- * `List(`), repository open, lock and snapshot-save failures, and HTTP or S3 client text.
+ * Backend context for any other line: Restic backend calls, repository open, lock and
+ * snapshot-save failures, and `Fatal:` lines. Provider text on such a line is then classified.
  */
-const BACKUP_STORAGE_LINE =
-  /^rclone: |\b(?:Save|Load|Stat|Remove)\(<|\bList\(|unable to open repository|unable to create lock|unable to save snapshot|\bHTTP\b|api error|\bs3\.|operation error S3:/;
+const BACKUP_BACKEND_CONTEXT_LINE =
+  /^Fatal: |\b(?:Save|Load|Stat|Remove)\(<|\bList\(|unable to open repository|unable to create lock|unable to save snapshot/;
 
 /** Restic backup stderr also carries source errors, so only lines from the storage path are classified. */
 function classifyBackupStorageFailure(
@@ -879,7 +884,9 @@ function classifyBackupStorageFailure(
     .map((line) => line.trim())
     .filter(
       (line) =>
-        !BACKUP_SOURCE_READ_LINE.test(line) && BACKUP_STORAGE_LINE.test(line),
+        BACKUP_RCLONE_LINE.test(line) ||
+        (!BACKUP_SOURCE_READ_LINE.test(line) &&
+          BACKUP_BACKEND_CONTEXT_LINE.test(line)),
     )
     .join("\n");
   if (S3_AUTHENTICATION_FAILURE.test(storage))
