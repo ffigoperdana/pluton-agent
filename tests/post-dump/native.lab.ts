@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
@@ -80,6 +81,9 @@ let fault = 'healthy',
 	remaining = 0,
 	completeUncertain = false;
 let activeDataDir = '';
+let stopS3: (() => void) | undefined;
+let s3Front: https.Server | undefined;
+const s3FrontSockets = new Set<net.Socket>();
 const journal: string[] = [];
 async function nativePids(name: string): Promise<number[]> {
 	const pids: number[] = [];
@@ -166,6 +170,30 @@ try {
 		assert(n < 120);
 		await new Promise(r => setTimeout(r, 25));
 	}
+	// Independent test sealer (S3 design 10.3); the Agent only opens.
+	const label = 'pluton-agent-command-secrets-v1';
+	const sealSecrets = (commandId: string, leaseToken: string, plaintext: unknown) => {
+		const key = Buffer.from(
+			crypto.hkdfSync(
+				'sha256',
+				Buffer.from(agentSecret, 'utf8'),
+				Buffer.alloc(0),
+				Buffer.from(label, 'utf8'),
+				32
+			)
+		);
+		const nonce = crypto.randomBytes(12);
+		const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce, { authTagLength: 16 });
+		cipher.setAAD(Buffer.from(`${label}\n${commandId}\n${leaseToken}`, 'utf8'));
+		const ciphertext = Buffer.concat([cipher.update(JSON.stringify(plaintext), 'utf8'), cipher.final()]);
+		return {
+			alg: 'A256GCM',
+			kid: label,
+			nonce: nonce.toString('base64'),
+			ciphertext: ciphertext.toString('base64'),
+			tag: cipher.getAuthTag().toString('base64'),
+		};
+	};
 	const nonces = new Set<string>();
 	let leaseUntil = Date.now() + 60_000;
 	server = http.createServer(async (req, res) => {
@@ -268,12 +296,19 @@ try {
 		}
 		if (postDump && fault === 'repository' && text.includes('database-dump-completed'))
 			sftp.kill('SIGTERM');
+		// The S3 endpoint stops after the access check, the empty-target check, init and
+		// the dump succeeded: native Restic's backend calls then fail during the backup.
+		if (fault.startsWith('s3-fails-') && text.includes('restic backup started')) {
+			resticStarted = true;
+			stopS3?.();
+		}
 	};
 	console.error = (...args: any[]) => journal.push(args.join(' '));
 	const scenarios = baseline
 		? [['503', 1000]]
 		: [
 				['healthy', 0],
+				['sftp-v5-sealed', 0],
 				['legacy-status', 0],
 				['events429', 0],
 				['429', 1],
@@ -362,6 +397,30 @@ try {
 				},
 			},
 		};
+		if (fault === 'sftp-v5-sealed') {
+			// Payload version 5 over SFTP, as every SFTP plan of a 0.8.0 Agent receives after
+			// the server deploy: exclusions (version 4 source rules), a version 2 lifecycle,
+			// and the repository, SFTP and database passwords sealed (S3 design 10.3).
+			const { repositoryPassword: _repositoryPassword, ...plain } = current.payload;
+			const { password: _password, ...database } = plain.lifecycle.databases[0];
+			current.payload = {
+				...plain,
+				version: 5,
+				excludes: ['node_modules'],
+				sourceDiagnosticsVersion: 1,
+				rclone: { type: 'sftp', options: { host: '127.0.0.1', port: String(sftpPort), user: 'fixture' } },
+				sealed: sealSecrets(current.id, current.leaseToken, {
+					repositoryPassword: repoPassword,
+					rclone: { pass: sftpPassword },
+					lifecycle: { databases: { db_fixture: dbPassword } },
+				}),
+				lifecycle: { version: 2, databases: [database] },
+			};
+			for (const value of [repoPassword, sftpPassword, dbPassword])
+				assert(!JSON.stringify(current.payload).includes(value), 'A v5 payload carries no plain secret.');
+			await fs.mkdir(path.join(source, 'node_modules'));
+			await fs.writeFile(path.join(source, 'node_modules', 'excluded.txt'), 'synthetic excluded\n');
+		}
 		const sign = () => {
 			current.signature = crypto
 				.createHmac('sha256', agentSecret)
@@ -440,7 +499,7 @@ try {
 			assert.equal(completion.failureCode, 'unexpected');
 			assert(!journal.some(s => s.includes('stage=repository-target-check')));
 		} else if (
-			['healthy', 'legacy-status', 'events429', 'uncertain-completion', 'journal-throw'].includes(fault) ||
+			['healthy', 'sftp-v5-sealed', 'legacy-status', 'events429', 'uncertain-completion', 'journal-throw'].includes(fault) ||
 			transientRecovery
 		) {
 			assert.equal(completion.success, true);
@@ -449,6 +508,23 @@ try {
 			assert(receipt.bytes > 0);
 			assert.match(receipt.sha256, /^[a-f0-9]{64}$/);
 			const repo = path.join(storage, current.payload.repository.path);
+			if (fault === 'sftp-v5-sealed') {
+				const nodes = (
+					await run(
+						'/usr/local/bin/restic',
+						['--no-cache', '-r', repo, 'ls', '--json', completion.result.snapshotId],
+						undefined,
+						{ RESTIC_PASSWORD: repoPassword }
+					)
+				)
+					.trim()
+					.split('\n')
+					.map(line => JSON.parse(line))
+					.filter(node => node.struct_type === 'node')
+					.map(node => String(node.path));
+				assert(nodes.includes(path.join(source, 'app.txt')), 'The v5 SFTP snapshot must contain the source.');
+				assert(!nodes.some(item => item.includes('/node_modules')), 'The v5 exclusion must apply.');
+			}
 			const sql = await run(
 				'/usr/local/bin/restic',
 				['--no-cache', '-r', repo, 'dump', completion.result.snapshotId, receipt.path],
@@ -543,6 +619,10 @@ try {
 		}
 		assert.equal(journal.filter(s => s.includes('database-dump-started')).length, before);
 		assert.equal((await loadIdentity(dataDir)).completedCommands.length, 1);
+		if (fault === 'sftp-v5-sealed') {
+			assert(!files.some(name => name.startsWith('rclone-')), 'The temporary SFTP configuration must be removed.');
+			await fs.rm(path.join(source, 'node_modules'), { recursive: true, force: true });
+		}
 		for (const value of forbidden)
 			assert(
 				!JSON.stringify({
@@ -618,28 +698,47 @@ try {
 			await new Promise(r => setTimeout(r, 25));
 		}
 		const listeners = (await nativePids('rclone')).length;
-		const label = 'pluton-agent-command-secrets-v1';
-		const sealSecrets = (commandId: string, leaseToken: string, plaintext: unknown) => {
-			const key = Buffer.from(
-				crypto.hkdfSync(
-					'sha256',
-					Buffer.from(agentSecret, 'utf8'),
-					Buffer.alloc(0),
-					Buffer.from(label, 'utf8'),
-					32
-				)
-			);
-			const nonce = crypto.randomBytes(12);
-			const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce, { authTagLength: 16 });
-			cipher.setAAD(Buffer.from(`${label}\n${commandId}\n${leaseToken}`, 'utf8'));
-			const ciphertext = Buffer.concat([cipher.update(JSON.stringify(plaintext), 'utf8'), cipher.final()]);
-			return {
-				alg: 'A256GCM',
-				kid: label,
-				nonce: nonce.toString('base64'),
-				ciphertext: ciphertext.toString('base64'),
-				tag: cipher.getAuthTag().toString('base64'),
+		// HTTPS front of the fixture for the `s3-fails-*` cases (same certificate). It
+		// forwards every request (access check, empty-target check, init, snapshot lookup,
+		// dump) until "restic backup started". Then `open` stops it at once (Restic cannot
+		// open the repository), and `upload` stops it at the first pack upload: the
+		// listener closes and every connection drops, as an S3 endpoint that goes away.
+		const tls = {
+			cert: await fs.readFile('/app/fixture-tls-server/server.pem'),
+			key: await fs.readFile('/app/fixture-tls-server/server-key.pem'),
+		};
+		const fixtureCa = await fs.readFile(storageCaFile);
+		const startFront = async (mode: 'open' | 'upload') => {
+			const frontPort = await port();
+			const state = { port: frontPort, armed: false, stopped: false };
+			const front = https.createServer(tls, (req, res) => {
+				if (state.armed && req.method === 'PUT' && /\/data\//.test(req.url ?? '')) {
+					stop();
+					return;
+				}
+				const upstream = https.request(
+					{ host: '127.0.0.1', port: s3Port, method: req.method, path: req.url, headers: req.headers, ca: fixtureCa },
+					answer => {
+						res.writeHead(answer.statusCode ?? 502, answer.headers);
+						answer.pipe(res);
+					}
+				);
+				upstream.once('error', () => res.destroy());
+				req.pipe(upstream);
+			});
+			const stop = () => {
+				state.stopped = true;
+				front.close();
+				for (const socket of s3FrontSockets) socket.destroy();
 			};
+			front.on('connection', socket => {
+				s3FrontSockets.add(socket);
+				socket.once('close', () => s3FrontSockets.delete(socket));
+			});
+			await new Promise<void>(r => front.listen(frontPort, '127.0.0.1', r));
+			s3Front = front;
+			stopS3 = () => (mode === 'open' ? stop() : (state.armed = true));
+			return state;
 		};
 		const s3Cases = [
 			{ scenario: 's3-healthy', repositoryPath: 'bucket-01/managed/s3-healthy', trusted: true, secretKey: s3SecretKey, tamper: false, expected: undefined },
@@ -647,9 +746,15 @@ try {
 			{ scenario: 's3-wrong-key', repositoryPath: 'bucket-01/managed/s3-wrong-key', trusted: true, secretKey: s3WrongSecretKey, tamper: false, expected: ['repository-check', 'target-check-auth-failed'] },
 			{ scenario: 's3-non-empty', repositoryPath: 'bucket-01/managed/s3-occupied', trusted: true, secretKey: s3SecretKey, tamper: false, expected: ['repository-target-check', 'repository-target-not-empty'] },
 			{ scenario: 's3-tampered-seal', repositoryPath: 'bucket-01/managed/s3-tampered', trusted: true, secretKey: s3SecretKey, tamper: true, expected: ['payload-validation', 'invalid-payload'] },
+			{ scenario: 's3-fails-at-backup-start', repositoryPath: 'bucket-01/managed/s3-fails-open', trusted: true, secretKey: s3SecretKey, tamper: false, expected: ['restic-backup', 'target-check-transport-failed'] },
+			{ scenario: 's3-fails-during-upload', repositoryPath: 'bucket-01/managed/s3-fails-upload', trusted: true, secretKey: s3SecretKey, tamper: false, expected: ['restic-backup', 'target-check-transport-failed'] },
 		];
 		for (let i = 0; i < s3Cases.length; i++) {
 			const item = s3Cases[i];
+			const failing = item.scenario.startsWith('s3-fails-');
+			const front = failing
+				? await startFront(item.scenario === 's3-fails-at-backup-start' ? 'open' : 'upload')
+				: undefined;
 			fault = item.scenario;
 			remaining = 0;
 			completeUncertain = false;
@@ -658,6 +763,7 @@ try {
 			resticStarted = false;
 			statusCalls = acknowledgements = events = applied = 0;
 			completions = [];
+			const journalStart = journal.length;
 			const dataDir = path.join(root, `state-s3-${i}`);
 			activeDataDir = dataDir;
 			await fs.mkdir(dataDir, { mode: 0o700 });
@@ -700,7 +806,7 @@ try {
 						type: 's3',
 						options: {
 							provider: 'Other',
-							endpoint: `https://127.0.0.1:${s3Port}`,
+							endpoint: `https://127.0.0.1:${front?.port ?? s3Port}`,
 							region: 'us-east-1',
 							force_path_style: 'true',
 							use_accept_encoding_gzip: 'false',
@@ -826,7 +932,16 @@ try {
 				assert.equal(completion.success, false);
 				assert.deepEqual([completion.failureStage, completion.failureCode], item.expected);
 				assert.equal(completion.result, undefined, 'A failed S3 backup cannot report a snapshot.');
-				assert.equal(dumpStarted, item.scenario === 's3-non-empty', 'Only the non-empty prefix case reaches the dump.');
+				assert.equal(
+					dumpStarted,
+					item.scenario === 's3-non-empty' || failing,
+					'Only the non-empty prefix and mid-backup failure cases reach the dump.'
+				);
+				if (failing) {
+					const caseJournal = journal.slice(journalStart);
+					assert(caseJournal.some(text => text.includes('storage access verified')), 'The access check passed first.');
+					assert(postDump && resticStarted && front!.stopped, 'The endpoint must stop during restic backup.');
+				}
 			}
 			const files = await fs.readdir(dataDir);
 			assert(!files.some(name => name.startsWith('rclone-')), 'The temporary S3 configuration must be removed.');
@@ -869,6 +984,8 @@ try {
 	console.error = originalError;
 	server?.closeAllConnections();
 	if (server) await new Promise<void>(r => server!.close(() => r()));
+	s3Front?.close();
+	for (const socket of s3FrontSockets) socket.destroy();
 	for (const child of children) child.kill('SIGTERM');
 	await fs.rm(root, { recursive: true, force: true });
 }
