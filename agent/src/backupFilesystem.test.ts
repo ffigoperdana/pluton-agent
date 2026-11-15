@@ -1531,6 +1531,8 @@ async function createS3ExecutionFixture(
     lsfDiagnostics?: string;
     backupExit?: number;
     backupDiagnostics?: string;
+    /** After its stderr, `restic backup` hangs with no new output until killed by this signal. */
+    backupSignal?: NodeJS.Signals;
   } = {},
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), "pluton-agent-s3-"));
@@ -1579,7 +1581,8 @@ if (args.includes("cat") && args.includes("config")) console.log(JSON.stringify(
 else if (args.includes("snapshots")) process.exitCode = 10;
 else if (args.includes("backup")) {
   process.stderr.write(${JSON.stringify((options.backupDiagnostics ?? "").replaceAll("@SOURCE@", source))});
-  if (${options.backupExit ?? 0} !== 0) process.exitCode = ${options.backupExit ?? 0};
+  if (${JSON.stringify(options.backupSignal ?? "")}) setTimeout(() => process.kill(process.pid, ${JSON.stringify(options.backupSignal ?? "")}), 200);
+  else if (${options.backupExit ?? 0} !== 0) process.exitCode = ${options.backupExit ?? 0};
   else process.stdout.write(JSON.stringify({ message_type: "summary", snapshot_id: "abcdef0123456789", files_new: 0, files_changed: 0, files_unmodified: 0, dirs_new: 0, dirs_changed: 0, dirs_unmodified: 0, data_blobs: 0, tree_blobs: 0, data_added: 0, data_added_packed: 0, total_files_processed: 0, total_bytes_processed: 0, total_duration: 0 }) + "\\n");
 }
 `,
@@ -2012,6 +2015,18 @@ linuxExecutionTest(
   },
 );
 
+/**
+ * The captured decisive end of a real storage failure (docs/S3_REPOSITORY.md):
+ * Restic's give-up line and its final backend error. Storage lines decide the
+ * category only when the run ended this way; the same lines alone (a retry
+ * Restic recovered from) never make a storage failure.
+ */
+const RESTIC_STORAGE_GAVE_UP =
+  [
+    "Save(<data/0123456789>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+    '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: unexpected HTTP response (500): 500 Internal Server Error"}',
+  ].join("\n") + "\n";
+
 for (const scenario of [
   {
     name: "a refused upload",
@@ -2038,25 +2053,30 @@ for (const scenario of [
   },
 ])
   linuxExecutionTest(
-    `S3: a Restic backup failure from ${scenario.name} becomes ${scenario.code}`,
+    `S3: a Restic backup failure from ${scenario.name} becomes ${scenario.code} once Restic gave up, restic-backup-failed before`,
     async () => {
-      const fixture = await createS3ExecutionFixture({
-        backupExit: 1,
-        backupDiagnostics: scenario.diagnostics,
-      });
-      try {
-        await assert.rejects(
-          executeFilesystemBackup(s3ExecutionInput(fixture)),
-          (error: unknown) => {
-            assert.ok(error instanceof BackupFilesystemError);
-            assert.equal(error.stage, "restic-backup");
-            assert.equal(error.code, scenario.code);
-            assert.ok(!JSON.stringify(error).includes("RequestID"));
-            return true;
-          },
-        );
-      } finally {
-        await rm(fixture.root, { recursive: true, force: true });
+      for (const [diagnostics, code] of [
+        [scenario.diagnostics + RESTIC_STORAGE_GAVE_UP, scenario.code],
+        [scenario.diagnostics, "restic-backup-failed"],
+      ]) {
+        const fixture = await createS3ExecutionFixture({
+          backupExit: 1,
+          backupDiagnostics: diagnostics,
+        });
+        try {
+          await assert.rejects(
+            executeFilesystemBackup(s3ExecutionInput(fixture)),
+            (error: unknown) => {
+              assert.ok(error instanceof BackupFilesystemError);
+              assert.equal(error.stage, "restic-backup");
+              assert.equal(error.code, code);
+              assert.ok(!JSON.stringify(error).includes("RequestID"));
+              return true;
+            },
+          );
+        } finally {
+          await rm(fixture.root, { recursive: true, force: true });
+        }
       }
     },
   );
@@ -2137,38 +2157,44 @@ for (const scenario of [
   },
 ])
   linuxExecutionTest(
-    `S3: backup stderr with ${scenario.name} reports ${scenario.code}`,
+    `S3: backup stderr with ${scenario.name} reports ${scenario.code} once Restic gave up, restic-backup-failed before`,
     async () => {
-      const fixture = await createS3ExecutionFixture({
-        backupExit: 1,
-        backupDiagnostics: scenario.diagnostics,
-      });
-      const stages: string[] = [];
-      try {
-        await assert.rejects(
-          executeFilesystemBackup({
-            ...s3ExecutionInput(fixture),
-            onStage: (event) => stages.push(`${event.stage}:${event.message}`),
-          }),
-          (error: unknown) => {
-            assert.ok(error instanceof BackupFilesystemError);
-            assert.equal(error.stage, "restic-backup");
-            assert.equal(error.code, scenario.code);
-            const text = JSON.stringify([error, stages]);
-            for (const leaked of [
-              "/srv/example-app",
-              "example.internal",
-              "192.0.2.",
-              "bucket-01",
-              "0123456789",
-              "AccessDenied-status",
-            ])
-              assert.ok(!text.includes(leaked), leaked);
-            return true;
-          },
-        );
-      } finally {
-        await rm(fixture.root, { recursive: true, force: true });
+      for (const [diagnostics, code] of [
+        [scenario.diagnostics + RESTIC_STORAGE_GAVE_UP, scenario.code],
+        [scenario.diagnostics, "restic-backup-failed"],
+      ]) {
+        const fixture = await createS3ExecutionFixture({
+          backupExit: 1,
+          backupDiagnostics: diagnostics,
+        });
+        const stages: string[] = [];
+        try {
+          await assert.rejects(
+            executeFilesystemBackup({
+              ...s3ExecutionInput(fixture),
+              onStage: (event) =>
+                stages.push(`${event.stage}:${event.message}`),
+            }),
+            (error: unknown) => {
+              assert.ok(error instanceof BackupFilesystemError);
+              assert.equal(error.stage, "restic-backup");
+              assert.equal(error.code, code);
+              const text = JSON.stringify([error, stages]);
+              for (const leaked of [
+                "/srv/example-app",
+                "example.internal",
+                "192.0.2.",
+                "bucket-01",
+                "0123456789",
+                "AccessDenied-status",
+              ])
+                assert.ok(!text.includes(leaked), leaked);
+              return true;
+            },
+          );
+        } finally {
+          await rm(fixture.root, { recursive: true, force: true });
+        }
       }
     },
   );
@@ -2237,8 +2263,112 @@ const STORAGE_GAVE_UP_EXIT =
   '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: unexpected HTTP response (500): 500 Internal Server Error"}';
 const lines = (...parts: (string | string[])[]) =>
   `${parts.flat().join("\n")}\n`;
+/**
+ * Restic's retry backend after a retried call succeeded, `"%v operation successful
+ * after %d retries"` (internal/global/global.go in Restic 0.19.1; not captured).
+ */
+const RECOVERED_UPLOAD = [
+  ...CAPTURED.uploadRetried503,
+  "Save(<data/0123456789>) operation successful after 1 retries",
+];
 
-for (const scenario of [
+type CapturedScenario = {
+  name: string;
+  exit: number;
+  /** Killed by this signal after a hang with no new output (exit status null). */
+  signal?: NodeJS.Signals;
+  diagnostics: string;
+  code: string;
+};
+
+for (const scenario of <CapturedScenario[]>[
+  {
+    name: "a hang with no new output until killed (NFS hard mount, Agent deadline) after a recovered 503 retry and NFS read errors",
+    exit: 0,
+    signal: "SIGTERM",
+    diagnostics: lines(RECOVERED_UPLOAD, CAPTURED.sourceReadFailures),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "a SIGKILL (OOM) after a recovered 503 retry",
+    exit: 0,
+    signal: "SIGKILL",
+    diagnostics: lines(RECOVERED_UPLOAD),
+    code: "restic-backup-failed",
+  },
+  {
+    // Restic 0.19.1 main.go: context.Canceled exits 130; the message is synthetic.
+    name: "exit 130 (service stop) with recovered Rclone 403 and 503 lines in the tail",
+    exit: 130,
+    diagnostics: lines(
+      CAPTURED.uploadRetried403,
+      RECOVERED_UPLOAD,
+      '{"message_type":"exit_error","code":130,"message":"context canceled"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "exit 130 with recovered retries and permission-denied source errors",
+    exit: 130,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      CAPTURED.sourcePermissionDenied,
+      '{"message_type":"exit_error","code":130,"message":"context canceled"}',
+    ),
+    code: "source-entry-inaccessible",
+  },
+  {
+    // Exit 2 is a Go runtime crash; the crash text is synthetic.
+    name: "exit 2 (Go runtime crash) after recovered retries",
+    exit: 2,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      CAPTURED.uploadRefused,
+      "fatal error: runtime: out of memory",
+      "goroutine 1 [running]:",
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // ErrNoSourceData in Restic 0.19.1 cmd/restic/cmd_backup.go.
+    name: "exit 1 with no source data left after recovered retries",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      '{"message_type":"exit_error","code":1,"message":"Fatal: all source directories/files do not exist"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // `unable to save snapshot: %v` is Restic's wrapper; the local cause is synthetic.
+    name: "exit 1 with a local temporary-file failure after recovered retries",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: write /tmp/restic-temp-pack-0123456789: no space left on device"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "exit 1 with a local fatal error after a recovered retry and JSON source errors that look like storage",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      '{"message_type":"error","error":{"message":"read @SOURCE@/nfs/Price List(2024).xlsx: connection timed out"},"during":"archival","item":"@SOURCE@/nfs/Price List(2024).xlsx"}',
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: synthetic local failure"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // Restic 0.19.1 main.go: IsAlreadyLocked exits 11 (another lock, not storage).
+    name: "exit 11 (repository already locked) after recovered retries",
+    exit: 11,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      '{"message_type":"exit_error","code":11,"message":"repository is already locked exclusively by PID 4242 on app-01\\nthe `unlock` command can be used to remove stale locks"}',
+    ),
+    code: "restic-backup-failed",
+  },
   {
     name: "exit 3 with a recovered Rclone upload error and NFS EIO/ESTALE read errors",
     exit: 3,
@@ -2356,6 +2486,7 @@ for (const scenario of [
     async () => {
       const fixture = await createS3ExecutionFixture({
         backupExit: scenario.exit,
+        backupSignal: scenario.signal,
         backupDiagnostics: scenario.diagnostics,
       });
       try {

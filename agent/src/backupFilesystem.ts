@@ -888,6 +888,19 @@ const BACKUP_RCLONE_LINE = /^rclone: /;
 /** Restic backend calls and text-mode fatal errors, anchored so file names never match. */
 const BACKUP_BACKEND_CONTEXT_LINE =
   /^(?:Fatal: |(?:Save|Load|Stat|Remove)\(<|List\()/;
+/**
+ * A final error that names the storage backend: Restic's REST client to the Rclone
+ * bridge (`unexpected HTTP response (%v): %v`, internal/backend/rest) and the bridge
+ * start-up check (`error talking HTTP to rclone: %w`, internal/backend/rclone).
+ */
+const RESTIC_BACKEND_FINAL_ERROR =
+  /unexpected HTTP response \(|error talking HTTP to rclone/;
+/**
+ * Restic's retry backend gave up on a backend call (`"%v failed: %v"`,
+ * internal/global/global.go); `returned error, retrying` lines are not final.
+ */
+const RESTIC_BACKEND_GAVE_UP =
+  /^(?:(?:Save|Stat|Remove)\(<[^>]*>\)|Load\(<[^>]*>, \d+, \d+\)|List\([^)]*\)) failed: /;
 
 /** The message of a Restic JSON `exit_error`; every other JSON line (source errors included) is not storage. */
 function resticExitErrorMessage(line: string): string | undefined {
@@ -906,33 +919,49 @@ function resticExitErrorMessage(line: string): string | undefined {
 }
 
 /**
- * Restic backup stderr also carries source errors, so only lines from the storage
- * path are classified, from the bounded tail. Exit 3 (snapshot saved, source files
- * unreadable) is never a storage failure, whatever retries Rclone printed earlier.
+ * A storage failure only when the run ended because of storage: Restic exited 1
+ * (its exit status for every backend failure; 3 is unreadable source files, 10 no
+ * repository, 11 an existing lock, 12 a wrong password, 130 interrupted, 2 a Go
+ * crash, none a signal or the Agent's deadline) and its decisive final error names
+ * the backend, or it gave up on a backend call. Retries Restic recovered from never
+ * count on their own. Only then do the storage lines of the bounded tail choose the
+ * category (Restic backup stderr also carries source errors).
  */
 function classifyBackupStorageFailure(
   diagnostics: string,
   code: number | null,
   trimmed = false,
 ): RepositoryTargetFailureCode | undefined {
-  if (code === 3) return undefined;
+  if (code !== 1) return undefined;
   const lines = diagnostics.split(/\r\n|\r|\n/);
   // A tail cut mid-line could turn part of a JSON source record into a plain line.
   if (trimmed) lines.shift();
   const candidates: string[] = [];
+  let finalError: string | undefined;
+  let gaveUp = false;
   for (const raw of lines) {
     const line = raw.trim();
     if (line.startsWith("{")) {
       const message = resticExitErrorMessage(line);
-      if (message !== undefined && !BACKUP_SOURCE_READ_LINE.test(message))
-        candidates.push(message);
-    } else if (
+      if (message === undefined) continue;
+      finalError = message;
+      if (!BACKUP_SOURCE_READ_LINE.test(message)) candidates.push(message);
+      continue;
+    }
+    if (line.startsWith("Fatal: ")) finalError = line;
+    if (RESTIC_BACKEND_GAVE_UP.test(line)) gaveUp = true;
+    if (
       BACKUP_RCLONE_LINE.test(line) ||
       (!BACKUP_SOURCE_READ_LINE.test(line) &&
         BACKUP_BACKEND_CONTEXT_LINE.test(line))
     )
       candidates.push(line);
   }
+  if (
+    !gaveUp &&
+    !(finalError !== undefined && RESTIC_BACKEND_FINAL_ERROR.test(finalError))
+  )
+    return undefined;
   const storage = candidates.join("\n");
   if (S3_AUTHENTICATION_FAILURE.test(storage))
     return "target-check-auth-failed";
@@ -1139,17 +1168,9 @@ async function runProgram(
         () => {
           if (statusFailure) return reject(statusFailure);
           if (cancelled) return reject(new BackupCancelledError());
+          // The Agent's own deadline (for example a source read hung on an NFS hard
+          // mount) is never a storage failure, for S3 as for SFTP.
           if (timedOut) {
-            if (options.classifyBackupStorageFailure)
-              return reject(
-                new ProgramExitError(
-                  classifyBackupStorageFailure(
-                    backupDiagnostics,
-                    null,
-                    backupDiagnosticsTrimmed,
-                  ),
-                ),
-              );
             const reason = options.classifyRepositoryFailure
               ? repositoryDiagnostic(code, diagnostics)
               : undefined;
@@ -1161,8 +1182,9 @@ async function runProgram(
           }
           consumeSourceLine(stderrBuffer);
           if ((code !== 0 || sourceFailure) && !options.allowFailure) {
-            // A fatal S3 storage failure is why the backup stopped, even when source
-            // files were also unreadable; exit 0 and exit 3 never reach storage codes.
+            // A fatal S3 storage failure (exit 1 with a backend final error) is why the
+            // backup stopped, even when source files were also unreadable. The server
+            // accepts per-file source diagnostics only with a source failure code.
             const storageFailure =
               options.classifyBackupStorageFailure && code !== 0
                 ? classifyBackupStorageFailure(
