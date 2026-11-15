@@ -1409,3 +1409,49 @@ for (const scenario of [
     },
   );
 }
+
+linuxExecutionTest(
+  "payload v5: follows version 3 source rules without exclusions and version 4 rules with them",
+  async () => {
+    const fixture = await createExecutionFixture("");
+    const unreadable = path.join(fixture.source, "included.txt");
+    await writeFile(unreadable, "synthetic included");
+    await chmod(unreadable, 0);
+    try {
+      const base = executionInput(fixture);
+      // Without exclusions the server would have sent version 1 to 3: no pre-backup scan.
+      await executeFilesystemBackup({
+        ...base,
+        payload: sftpVersion5Payload(fixture.source),
+        commandSeal: sealContext,
+      });
+      // With exclusions the server would have sent version 4: scan and anchored filters.
+      await assert.rejects(
+        executeFilesystemBackup({
+          ...base,
+          payload: sftpVersion5Payload(fixture.source, ["node_modules/"]),
+          commandSeal: sealContext,
+        }),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.stage === "source-validation" &&
+          error.code === "source-entry-inaccessible",
+      );
+      await chmod(unreadable, 0o600);
+      await executeFilesystemBackup({
+        ...base,
+        payload: sftpVersion5Payload(fixture.source, ["*.sql"]),
+        commandSeal: sealContext,
+      });
+      const backups = (
+        await readCalls(path.join(fixture.dataDir, "restic-calls"))
+      ).filter((args) => args.includes("backup"));
+      assert.equal(backups.length, 2);
+      assert.ok(!backups[0].some((arg) => arg.includes("**/")));
+      assert.ok(backups[1].includes(`${fixture.source}/**/*.sql`));
+    } finally {
+      await chmod(unreadable, 0o600);
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);

@@ -746,6 +746,27 @@ export function parseBackupFilesystemPayload(
   };
 }
 
+/**
+ * Version 5 replaces 1 to 4 for Agents that accept it, so it keeps the source
+ * rules of the version the server would otherwise send. With exclusions that is
+ * version 4: anchored exclusions, the pre-backup scan and excluded-path source
+ * diagnostics. Without exclusions the source rules of versions 1 to 3 apply.
+ */
+function usesVersion4SourceRules(payload: BackupFilesystemPayload): boolean {
+  return (
+    payload.version === 4 ||
+    (payload.version === 5 && payload.excludes.length > 0)
+  );
+}
+
+/** Version 3, and version 5 with a version 2 lifecycle, bind the source and recover receipts. */
+function bindsApplicationSource(payload: BackupFilesystemPayload): boolean {
+  return (
+    payload.version === 3 ||
+    (payload.version === 5 && payload.lifecycle?.version === 2)
+  );
+}
+
 function isWithin(parent: string, child: string): boolean {
   const relative = path.relative(parent, child);
   return (
@@ -1462,7 +1483,7 @@ async function confirmLifecycleSnapshot(
     );
     if (matches.length !== 1) throw new Error("Snapshot binding failed.");
     const fullId = matches[0].id as string;
-    if (payload.version === 3) {
+    if (bindsApplicationSource(payload)) {
       if (
         !Array.isArray(matches[0].paths) ||
         !matches[0].paths.includes(source)
@@ -1527,7 +1548,7 @@ async function confirmLifecycleSnapshot(
           db.databaseId,
           db.engine,
         );
-      if (payload.version === 3 && expectedReport && !expected) {
+      if (bindsApplicationSource(payload) && expectedReport && !expected) {
         // Local completion receipt lost: recover hashes from the existing tagged
         // snapshot, never rerun hooks/dumps or materialize SQL in the live source.
         const digest = await runLifecycleProcess({
@@ -1664,10 +1685,9 @@ export async function executeFilesystemBackup(input: {
     ).resolvedPath;
     if (input.serverManagedSource && sourcePathContainsPrivateDirectory(source))
       throw new SourceAccessError("source-policy-violation");
-    const userExcludes =
-      payload.version === 4
-        ? sourceResticExclusions(source, payload.excludes)
-        : payload.excludes;
+    const userExcludes = usesVersion4SourceRules(payload)
+      ? sourceResticExclusions(source, payload.excludes)
+      : payload.excludes;
     emitStage({
       stage: "source-validation",
       message: "source validated",
@@ -1675,7 +1695,7 @@ export async function executeFilesystemBackup(input: {
 
     setStage("state-validation");
     await assertSourceDoesNotOverlapState(source, input.config.dataDir);
-    if (payload.version === 4) {
+    if (usesVersion4SourceRules(payload)) {
       setStage("source-validation");
       const scan = await preflightSource(
         payload.sourcePath,
@@ -1755,7 +1775,7 @@ export async function executeFilesystemBackup(input: {
         setStage("snapshot-confirmation");
         const replayReport: LifecycleReport = {
           warnings: [],
-          ...(payload.version === 3 ? { databases: [] } : {}),
+          ...(bindsApplicationSource(payload) ? { databases: [] } : {}),
         };
         const fullId = await confirmLifecycleSnapshot(
           restic,
@@ -1954,7 +1974,7 @@ export async function executeFilesystemBackup(input: {
         await preflightSource(
           payload.sourcePath,
           input.allowedRoots,
-          payload.version === 4
+          usesVersion4SourceRules(payload)
             ? {
                 scan: true,
                 collectProblems: payload.sourceDiagnosticsVersion === 1,
@@ -1998,7 +2018,7 @@ export async function executeFilesystemBackup(input: {
     await runProgram(restic, args, {
       env,
       source,
-      ...(payload.version === 4
+      ...(usesVersion4SourceRules(payload)
         ? {
             sourceExcluded: compileBackupExclusions([
               ...payload.excludes,

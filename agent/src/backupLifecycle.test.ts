@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import {
   chmod,
   mkdir,
@@ -870,6 +871,146 @@ executionTest(
         { stage: "post-backup", code: "hook-timeout" },
       ]);
       await absent(job.workspace);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  },
+);
+
+const sealContext = {
+  secret: "synthetic-agent-secret-0123456789abcdef",
+  commandId: "cmd-synthetic-01",
+  leaseToken: "0123456789abcdef0123456789abcdef0123456789abcdef",
+};
+
+/**
+ * Turn a version 2/3 SFTP payload into the equivalent sealed version 5 payload:
+ * the repository password, the SFTP password and every database password move
+ * into `sealed` (S3 design 10.3); the plain lifecycle keeps no `password`.
+ */
+function sealedVersion5(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const { repositoryPassword, rclone, lifecycle, ...rest } = payload;
+  const { type, options } = rclone as {
+    type: string;
+    options: Record<string, string>;
+  };
+  const { pass, ...plain } = options;
+  const source = lifecycle as
+    | {
+        database?: Record<string, unknown>;
+        databases?: Record<string, unknown>[];
+      }
+    | undefined;
+  const withoutPassword = (entry: Record<string, unknown>) => {
+    const { password: _password, ...remainder } = entry;
+    return remainder;
+  };
+  const plainLifecycle = source
+    ? {
+        ...source,
+        ...(source.database
+          ? { database: withoutPassword(source.database) }
+          : {}),
+        ...(source.databases
+          ? { databases: source.databases.map(withoutPassword) }
+          : {}),
+      }
+    : undefined;
+  const sealedLifecycle = source?.database
+    ? { database: source.database.password as string }
+    : source?.databases?.length
+      ? {
+          databases: Object.fromEntries(
+            source.databases.map((entry) => [
+              entry.databaseId as string,
+              entry.password as string,
+            ]),
+          ),
+        }
+      : undefined;
+  const label = "pluton-agent-command-secrets-v1";
+  const key = Buffer.from(
+    crypto.hkdfSync(
+      "sha256",
+      Buffer.from(sealContext.secret, "utf8"),
+      Buffer.alloc(0),
+      Buffer.from(label, "utf8"),
+      32,
+    ),
+  );
+  const nonce = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce, {
+    authTagLength: 16,
+  });
+  cipher.setAAD(
+    Buffer.from(
+      `${label}\n${sealContext.commandId}\n${sealContext.leaseToken}`,
+      "utf8",
+    ),
+  );
+  const ciphertext = Buffer.concat([
+    cipher.update(
+      JSON.stringify({
+        repositoryPassword,
+        rclone: { pass },
+        ...(sealedLifecycle ? { lifecycle: sealedLifecycle } : {}),
+      }),
+      "utf8",
+    ),
+    cipher.final(),
+  ]);
+  return {
+    ...rest,
+    ...(plainLifecycle ? { lifecycle: plainLifecycle } : {}),
+    version: 5,
+    rclone: { type, options: plain },
+    sealed: {
+      alg: "A256GCM",
+      kid: label,
+      nonce: nonce.toString("base64"),
+      ciphertext: ciphertext.toString("base64"),
+      tag: cipher.getAuthTag().toString("base64"),
+    },
+  };
+}
+
+executionTest(
+  "payload v5 with a version 2 lifecycle binds the application source and recovers receipts on replay like version 3",
+  async () => {
+    const f = await multiFixture(multiEntries(["mariadb", "postgresql"]));
+    try {
+      const input = {
+        ...f.input,
+        payload: sealedVersion5(f.input.payload),
+        commandSeal: sealContext,
+      };
+      assert.ok(
+        !JSON.stringify(input.payload.lifecycle).includes("password"),
+        "Version 5 database passwords travel only sealed",
+      );
+      const result = await executeFilesystemBackup(input);
+      const replay = await executeFilesystemBackup(input);
+      assert.equal(replay.snapshotId, result.snapshotId);
+      assert.equal(result.lifecycle?.databases?.length, 2);
+      assert.deepEqual(
+        replay.lifecycle?.databases,
+        result.lifecycle?.databases,
+        "Replay must recover every artifact's safe metadata, as version 3 does",
+      );
+      const resticCalls = await calls(path.join(f.dataDir, "restic-calls"));
+      assert.ok(
+        resticCalls.some(
+          (args: string[]) => args.includes("ls") && args.at(-1) === f.source,
+        ),
+        "The application source must be bound to the snapshot",
+      );
+      assert.equal(
+        resticCalls.filter((args: string[]) => args.includes("backup")).length,
+        1,
+      );
+      assert.equal((await calls(path.join(f.dataDir, "dump-calls"))).length, 2);
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }
