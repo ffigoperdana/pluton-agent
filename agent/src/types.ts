@@ -92,6 +92,11 @@ export type AgentConfig = {
   sourcePolicyFile?: string;
   allowInsecureHttp: boolean;
   caFile?: string;
+  /**
+   * Operator-installed CA bundle for S3 repositories (PLUTON_AGENT_STORAGE_CA_FILE),
+   * passed to Restic and Rclone as SSL_CERT_FILE. Never supplied by a command.
+   */
+  storageCaFile?: string;
   clientCertFile?: string;
   clientKeyFile?: string;
 };

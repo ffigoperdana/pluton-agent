@@ -1752,6 +1752,16 @@ export async function executeFilesystemBackup(input: {
       );
     }
     setStage("temporary-storage-config");
+    if (payload.rclone.type === "s3" && input.config.storageCaFile) {
+      // Operator-installed trust only; the server never sends CA files.
+      const storageCa = assertRootOwnedPath(
+        input.config.storageCaFile,
+        false,
+        true,
+      );
+      env.SSL_CERT_FILE = storageCa;
+      rcloneEnv.SSL_CERT_FILE = storageCa;
+    }
     temporary = await writeTemporaryRcloneConfig(
       input.config.dataDir,
       rcloneOptions,

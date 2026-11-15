@@ -1680,3 +1680,91 @@ permissionTest(
     }
   },
 );
+
+/** Root-owned, readable PEM bundle present in the Ubuntu validation image (ca-certificates). */
+const rootOwnedCaBundle = "/etc/ssl/certs/ca-certificates.crt";
+
+linuxExecutionTest(
+  "S3: PLUTON_AGENT_STORAGE_CA_FILE reaches Restic and Rclone as SSL_CERT_FILE",
+  async () => {
+    assert.ok(
+      existsSync(rootOwnedCaBundle),
+      "The Ubuntu validation image provides a root-owned CA bundle.",
+    );
+    for (const storageCaFile of [rootOwnedCaBundle, undefined]) {
+      const fixture = await createS3ExecutionFixture();
+      try {
+        await executeFilesystemBackup(
+          s3ExecutionInput(
+            fixture,
+            undefined,
+            storageCaFile ? { storageCaFile } : {},
+          ),
+        );
+        for (const file of ["rclone.env", "restic.env"])
+          assert.ok(
+            (
+              await readJsonLines<{ SSL_CERT_FILE: string | null }>(
+                path.join(fixture.dataDir, file),
+              )
+            ).every((entry) => entry.SSL_CERT_FILE === (storageCaFile ?? null)),
+            `${file} ${storageCaFile ?? "without CA"}`,
+          );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    }
+  },
+);
+
+linuxExecutionTest(
+  "S3: a storage CA that is not root-owned refuses the backup before any storage tool runs",
+  async () => {
+    const fixture = await createS3ExecutionFixture();
+    const unowned = path.join(fixture.root, "storage-ca.pem");
+    await writeFile(unowned, "synthetic CA\n", { mode: 0o644 });
+    try {
+      await assert.rejects(
+        executeFilesystemBackup(
+          s3ExecutionInput(fixture, undefined, { storageCaFile: unowned }),
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof BackupFilesystemError);
+          assert.equal(error.stage, "temporary-storage-config");
+          assert.equal(error.code, "temporary-config-failed");
+          return true;
+        },
+      );
+      assert.ok(!existsSync(path.join(fixture.dataDir, "rclone.calls")));
+      assert.ok(!existsSync(path.join(fixture.dataDir, "restic-calls")));
+      assert.deepEqual(
+        (await readdir(fixture.dataDir)).filter((name) =>
+          name.startsWith("rclone-"),
+        ),
+        [],
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+linuxExecutionTest(
+  "S3: an SFTP backup ignores the storage CA setting",
+  async () => {
+    const fixture = await createExecutionFixture("");
+    try {
+      const input = executionInput(fixture);
+      const result = await executeFilesystemBackup({
+        ...input,
+        config: {
+          ...input.config,
+          storageCaFile: path.join(fixture.root, "absent-storage-ca.pem"),
+        },
+      });
+      assert.equal(result.snapshotId, "abcdef0123456789");
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
