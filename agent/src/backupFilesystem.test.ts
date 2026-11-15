@@ -9,6 +9,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -18,6 +19,7 @@ import {
   BackupFilesystemError,
   executeFilesystemBackup,
   parseBackupFilesystemPayload,
+  sweepStaleStorageConfigs,
   writeTemporaryRcloneConfig,
 } from "./backupFilesystem.js";
 import { SealedSecretsError } from "./sealedSecrets.js";
@@ -979,6 +981,64 @@ permissionTest("creates a private temporary Rclone config", async () => {
   }
 });
 
+permissionTest(
+  "sweeps stale temporary storage configs (SIGKILL, OOM, power loss) and nothing else",
+  async () => {
+    const dataDir = await mkdtemp(
+      path.join(os.tmpdir(), "pluton-agent-sweep-"),
+    );
+    const outside = await mkdtemp(
+      path.join(os.tmpdir(), "pluton-agent-sweep-outside-"),
+    );
+    try {
+      const s3 = await writeTemporaryRcloneConfig(
+        dataDir,
+        {
+          access_key_id: "SYNTHETICKEY01",
+          endpoint: "https://s3.example.internal",
+          secret_access_key: "synthetic-secret-key-01",
+        },
+        "s3",
+      );
+      const sftp = await writeTemporaryRcloneConfig(dataDir, {
+        host: "sftp.example.internal",
+        pass: "obscured-test-password",
+        user: "backup-user",
+      });
+      await writeFile(path.join(outside, "keep.txt"), "synthetic\n");
+      await symlink(outside, path.join(dataDir, "rclone-Link01"));
+      await mkdir(path.join(dataDir, "jobs"));
+      await mkdir(path.join(dataDir, "restic-cache"));
+      await mkdir(path.join(dataDir, "rclone-not-a-temporary-dir"));
+      await writeFile(path.join(dataDir, "rclone-abc123"), "regular file\n");
+      await writeFile(path.join(dataDir, "identity.json"), "{}\n");
+      assert.equal(await sweepStaleStorageConfigs(dataDir), 2);
+      assert.ok(!existsSync(s3.directory));
+      assert.ok(!existsSync(sftp.directory));
+      assert.deepEqual((await readdir(dataDir)).sort(), [
+        "identity.json",
+        "jobs",
+        "rclone-Link01",
+        "rclone-abc123",
+        "rclone-not-a-temporary-dir",
+        "restic-cache",
+      ]);
+      assert.equal(
+        await readFile(path.join(outside, "keep.txt"), "utf8"),
+        "synthetic\n",
+      );
+      assert.equal(await sweepStaleStorageConfigs(dataDir), 0);
+      assert.equal(
+        await sweepStaleStorageConfigs(path.join(dataDir, "missing")),
+        0,
+      );
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  },
+);
+
 async function createExecutionFixture(
   listing: string,
   exitCode = 0,
@@ -1673,7 +1733,9 @@ permissionTest(
           { endpoint: "https://s3.example.internal\n[other]" },
           "s3",
         ),
-        /unsafe value/,
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message === "Storage configuration contains an unsafe value.",
       );
     } finally {
       await rm(dataDir, { recursive: true, force: true });

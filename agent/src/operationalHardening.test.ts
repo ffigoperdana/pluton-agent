@@ -30,7 +30,9 @@ import { createAgentConfig } from "./config.js";
 import { AgentTransport } from "./transport.js";
 import { checkConnection, runOnce } from "./runtime.js";
 import { saveIdentity } from "./identity.js";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 test("Restic 0.19 status fields produce real bounded counters, not summary field names or fabricated percentages", () => {
   assert.deepEqual(
@@ -370,3 +372,134 @@ test("agent HTTP requests have a bounded deadline and bounded response", async (
     /size limit/,
   );
 });
+
+linux(
+  "service start-up sweeps a stale temporary storage config before the first request, unless another live process holds the activity fence",
+  async (t) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-startup-sweep-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const source = path.join(root, "source");
+    await mkdir(source);
+    const dataDir = path.join(root, "state");
+    await saveIdentity(dataDir, {
+      agentId: "agent-01",
+      deviceId: "app-01",
+      secret: "test-only-agent-secret",
+      pollIntervalSeconds: 5,
+      completedCommands: [],
+    });
+    // What SIGKILL, OOM or power loss during an S3 backup leaves behind.
+    const stale = path.join(dataDir, "rclone-Ab12Cd");
+    const writeStale = async () => {
+      await mkdir(stale, { mode: 0o700 });
+      await writeFile(
+        path.join(stale, "rclone.conf"),
+        "[pluton]\ntype = s3\nenv_auth = false\naccess_key_id = SYNTHETICKEY01\nsecret_access_key = synthetic-secret-key-01\n",
+        { mode: 0o600 },
+      );
+    };
+    await writeStale();
+    const fence = path.join(dataDir, "source-access-activity.json");
+    const writeFence = (pid: number) =>
+      writeFile(
+        fence,
+        JSON.stringify({
+          version: 1,
+          agentId: "agent-01",
+          pid,
+          operationId: "00000000-0000-4000-8000-000000000001",
+        }),
+        { mode: 0o600 },
+      );
+    const staleAtRequest: boolean[] = [];
+    const server = http.createServer((req, res) => {
+      staleAtRequest.push(existsSync(stale));
+      req.resume();
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ success: true, result: { command: null } }));
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    t.after(() => server.close());
+    const agent = fileURLToPath(new URL("./index.js", import.meta.url));
+    /** Starts the real service entry point and stops it once `until` holds. */
+    const startService = async (until: (output: string) => boolean) => {
+      const child = spawn(
+        process.execPath,
+        [
+          agent,
+          "run",
+          "--server",
+          `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`,
+          "--data-dir",
+          dataDir,
+          "--allowed-roots",
+          source,
+          "--bin-dir",
+          path.join(root, "bin"),
+          "--allow-insecure-http",
+        ],
+        {
+          env: {
+            PATH: process.env.PATH,
+            PLUTON_AGENT_SOURCE_POLICY_FILE: path.join(root, "absent.json"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let output = "";
+      await new Promise<void>((resolve, reject) => {
+        const deadline = setTimeout(() => {
+          clearInterval(poll);
+          child.kill("SIGKILL");
+          reject(new Error(`Agent start-up did not settle: ${output}`));
+        }, 20_000);
+        const check = () => {
+          if (!until(output)) return;
+          clearTimeout(deadline);
+          clearInterval(poll);
+          resolve();
+        };
+        const poll = setInterval(check, 50);
+        child.stdout.on("data", (chunk) => {
+          output += chunk;
+          check();
+        });
+        child.stderr.on("data", (chunk) => {
+          output += chunk;
+          check();
+        });
+        child.once("exit", () => {
+          clearTimeout(deadline);
+          clearInterval(poll);
+          reject(new Error(`Agent exited during start-up: ${output}`));
+        });
+      });
+      child.removeAllListeners("exit");
+      const exited = new Promise((resolve) => child.once("exit", resolve));
+      child.kill("SIGTERM");
+      const forceStop = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      await exited;
+      clearTimeout(forceStop);
+      return output;
+    };
+    // Another live process (here: this test) holds the fence: its own cleanup owns its config.
+    await writeFence(process.pid);
+    await startService((output) => /sweep skipped/.test(output));
+    assert.ok(existsSync(path.join(stale, "rclone.conf")));
+    // A fence whose process is gone is a crash fence: the config is stale.
+    const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    await new Promise((resolve) => gone.once("exit", resolve));
+    await writeFence(gone.pid!);
+    await startService((output) => /removed 1 stale/.test(output));
+    assert.ok(!existsSync(stale));
+    // No fence: removed before the first heartbeat.
+    await rm(fence);
+    await writeStale();
+    await startService(() => staleAtRequest.length > 0);
+    assert.equal(staleAtRequest[0], false);
+    assert.ok(!existsSync(stale));
+    assert.ok(existsSync(path.join(dataDir, "identity.json")));
+  },
+);

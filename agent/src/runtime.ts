@@ -1,8 +1,11 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { AgentClient } from "./client.js";
 import {
   BackupCancelledError,
   BackupFilesystemError,
   executeFilesystemBackup,
+  sweepStaleStorageConfigs,
 } from "./backupFilesystem.js";
 import {
   AgentOperationError,
@@ -16,7 +19,7 @@ import type { AgentConfig, StoredAgentIdentity } from "./types.js";
 import { ProgressDelivery, backupProgressStage } from "./progressDelivery.js";
 import { successfulSnapshotIds } from "./resticParent.js";
 import { SourceAccessPolicy, SourcePolicyError } from "./sourceAccessPolicy.js";
-import { upgradeHeld } from "./upgradeGuard.js";
+import { UPGRADE_PROTOCOL, upgradeHeld } from "./upgradeGuard.js";
 
 /** Installer validation must not lease or execute queued work. Identity is only read. */
 export async function checkConnection(config: AgentConfig): Promise<void> {
@@ -309,7 +312,58 @@ async function runOnceWork(
   );
 }
 
+/**
+ * The live activity fence holder (another Agent process in a command, or the
+ * upgrader) owns any temporary storage config it created; a fence whose process
+ * is gone is a crash fence. Same liveness rule as the upgrader's `processAlive`;
+ * an unreadable or malformed fence is treated as held.
+ */
+async function activityFenceHeldByLiveProcess(
+  dataDir: string,
+): Promise<boolean> {
+  let fence: unknown;
+  try {
+    fence = JSON.parse(
+      await readFile(path.join(dataDir, UPGRADE_PROTOCOL.activityFile), "utf8"),
+    );
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+  const pid = (fence as { pid?: unknown } | null)?.pid;
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 1)
+    return true;
+  if (pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/** Start-up only, before any command: removes what a crash left (plain S3 keys). */
+async function sweepStorageConfigsAtStartup(dataDir: string): Promise<void> {
+  try {
+    if (await activityFenceHeldByLiveProcess(dataDir)) {
+      console.warn(
+        "[pluton-agent] another Agent operation holds the activity fence; stale temporary storage config sweep skipped.",
+      );
+      return;
+    }
+    const removed = await sweepStaleStorageConfigs(dataDir);
+    if (removed)
+      console.info(
+        `[pluton-agent] removed ${removed} stale temporary storage config(s) left by an interrupted backup.`,
+      );
+  } catch {
+    console.error(
+      "[pluton-agent] stale temporary storage config sweep failed; inspect rclone-* directories in the data directory.",
+    );
+  }
+}
+
 export async function run(config: AgentConfig): Promise<void> {
+  await sweepStorageConfigsAtStartup(config.dataDir);
   const identity = await atAgentStage("load-identity", () =>
     loadIdentity(config.dataDir),
   );

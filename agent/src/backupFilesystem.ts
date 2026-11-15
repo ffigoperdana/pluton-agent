@@ -4,11 +4,12 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
-import { constants } from "node:fs";
+import { constants, type Dirent } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { CommandStatusError, type CommandStatusCode } from "./commandStatus.js";
@@ -1317,8 +1318,40 @@ async function checkS3RepositoryAccess(
 
 function rcloneConfigValue(value: string): string {
   if (/[\r\n\x00]/.test(value))
-    throw new Error("SFTP configuration contains an unsafe value.");
+    throw new Error("Storage configuration contains an unsafe value.");
   return value;
+}
+
+/** `mkdtemp(path.join(dataDir, "rclone-"))` names: the prefix and six letters or digits. */
+const TEMPORARY_STORAGE_CONFIG_DIRECTORY = /^rclone-[A-Za-z0-9]{6}$/;
+
+/**
+ * A temporary storage config (plain S3 keys, obscured SFTP password) is removed
+ * in `finally`, which SIGKILL, OOM or power loss can skip. Called at Agent
+ * start-up, before any command runs. Removes only real directories with the
+ * exact `mkdtemp` name; symbolic links and every other entry are kept.
+ */
+export async function sweepStaleStorageConfigs(
+  dataDir: string,
+): Promise<number> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dataDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (
+      !entry.isDirectory() ||
+      !TEMPORARY_STORAGE_CONFIG_DIRECTORY.test(entry.name)
+    )
+      continue;
+    await rm(path.join(dataDir, entry.name), { recursive: true, force: true });
+    removed++;
+  }
+  return removed;
 }
 
 export async function writeTemporaryRcloneConfig(
