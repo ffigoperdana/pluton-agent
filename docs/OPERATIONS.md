@@ -76,15 +76,17 @@ procedure. Do not copy an enrolled identity to a second host.
 
 The service requires outbound HTTPS to the server; it opens no inbound Agent
 listener. DNS, time synchronization, CA trust and the exact server origin matter.
-The source machine needs its own connection to SFTP and any source DB. The server
-also needs primary repository access; optional S3 replication belongs to the server.
+The source machine needs its own connection to its primary repository (SFTP, or
+HTTPS S3 for an S3-primary plan) and any source DB. The server also needs primary
+repository access; optional S3 replication of SFTP primaries belongs to the server.
+The Agent receives the S3 key of its own S3-primary plans only; never replica keys.
 
 `--ca-file` takes an approved PEM readable by the service. Do not disable certificate
 validation or bypass origin checks. Existing mTLS configuration support is retained;
 it is not configured automatically by enrollment. The token is consumed only during
 initial enrollment, not stored in Git or used for upgrades.
 
-Verify systemd status, authenticated ONLINE/Last seen, Agent version 0.7.0, private
+Verify systemd status, authenticated ONLINE/Last seen, Agent version 0.8.0, private
 client versions and required capabilities. `check` sends a signed heartbeat; it
 does not poll or execute queued work. Never use `run --once` as an idle probe.
 Systemd restart/stop commands below require operator drain/approval:
@@ -124,11 +126,71 @@ Server after signed opt-in. See [source diagnostics](SOURCE_ACCESS_DIAGNOSTICS.m
 for privacy, compatibility, preflight limitations and rollback order. Source
 Access Validate remains a root check, not a recursive saved-plan scan.
 
-Create a Managed Agent Backup Plan on the server using a dedicated SFTP repository.
+Create a Managed Agent Backup Plan on the server using a dedicated SFTP repository,
+or a dedicated S3 prefix for an Agent that advertises S3 (see below).
 Keep source and repository disjoint; do not adopt a legacy repository through a
 managed plan. Test one explicit synthetic backup. Check exact snapshot ID, receipt,
 coverage, warnings and restored sample content. ONLINE and Complete are not proof
 of SQL import, replica success or application recovery.
+
+## S3 repositories (Agent 0.8.0)
+
+Agent 0.8.0 can back up directly to an S3-compatible repository (for example
+HCP) when the compatible server offers S3 for the plan's device. The Agent
+receives the S3 key of its own S3-primary plans only; never replica keys. The key
+arrives sealed (AES-256-GCM bound to the command ID and lease token), exists only
+in Agent memory and a temporary 0600 Rclone configuration during one backup, and
+is never logged. See the [S3 repository report](S3_REPOSITORY.md).
+
+Update the Pluton server before installing or upgrading any Agent to 0.8.0: the
+server's capability schema is strict and refuses a 0.8.0 enrollment or heartbeat
+otherwise. Roll back in the reverse order, Agent first, then server.
+
+Enrol an Agent that will use an S3 primary over HTTPS (`AGENT_SERVER_URL` with
+`https://`). The per-Agent secret that keys the sealing is returned in the
+enrollment response; over plain HTTP a passive observer of enrollment could open
+sealed payloads. Plain HTTP for later traffic does not expose the sealed keys,
+but the enrollment exposure is an accepted residual risk only for HTTPS.
+
+One shared HCP key covers the whole namespace. A compromised Agent host can read
+and delete the S3 data of other plans (risk accepted by the operator); use a
+dedicated prefix per plan and protect the Agent host accordingly.
+
+The Agent host needs outbound HTTPS to the S3 endpoint itself (DNS and TLS must
+work from this host, not only from the Pluton server) and an S3 prefix that is
+empty at the first backup; a prefix that already holds objects is never
+initialized.
+
+Only if the stage 0 probe shows that the endpoint certificate does not verify with
+the system trust store, install a root-owned PEM bundle and configure it:
+
+```sh
+sudo install -o root -g root -m 0644 approved-storage-ca.pem /etc/pluton-agent/storage-ca.pem
+```
+
+A fresh installation passes `--storage-ca-file /etc/pluton-agent/storage-ca.pem`,
+which writes `PLUTON_AGENT_STORAGE_CA_FILE` to `/etc/pluton-agent.env`. On an
+installed Agent, drain it, add the line
+`PLUTON_AGENT_STORAGE_CA_FILE="/etc/pluton-agent/storage-ca.pem"` to
+`/etc/pluton-agent.env` as root and restart the service. The file must be
+root-owned, in root-owned directories, not group- or world-writable and not a
+symbolic link; the installer also refuses a path containing control characters.
+The Agent passes the file to Restic and Rclone as `SSL_CERT_FILE` for S3 backups
+only. It **replaces** the system trust store for those connections, so the bundle
+must contain every CA the endpoint needs. It never affects the control-plane
+connection (`--ca-file`) or SFTP backups, and the server never sends CA files. A CA
+file that violates these rules fails the backup as
+`temporary-storage-config`/`temporary-config-failed`.
+
+S3 failures use the existing closed codes: a wrong or revoked key is
+`repository-check`/`target-check-auth-failed`; a refused bucket or prefix is
+`target-check-access-failed`; DNS, TLS, timeouts and 5xx are
+`target-check-transport-failed`; a missing bucket is `repository-check-failed`; a
+non-empty first prefix is `repository-target-check`/`repository-target-not-empty`;
+a sealed field that does not open is `payload-validation`/`invalid-payload`, with
+nothing written first. During an S3 backup only Rclone and backend-context lines
+count as storage failures; every Restic `error:` line is a source error, so an NFS
+or other source read failure is never reported as a storage failure.
 
 ## Exclusions, DB and hooks
 

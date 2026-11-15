@@ -20,9 +20,9 @@ The initial extraction preserved the 36 Agent TypeScript source files from the
 Pluton Server commit in `contracts/extraction-source.json`. Subsequent independent
 [HTTPS/enrollment changes](NETWORK_ENROLLMENT.md) use the explicit hash delta
 `contracts/standalone-source-v1.json`; original extraction hashes and server
-golden vectors remain unchanged. The current Agent advertises 0.7.1; original
-0.7.0 HMAC/exclusion vectors remain authoritative. This reliability port keeps
-that advertisement and uses the reviewed immutable Git SHA to identify the fix.
+golden vectors remain unchanged. The current Agent advertises 0.8.0; original
+0.7.0 HMAC/exclusion vectors remain authoritative and the 0.8.0 S3 vectors are
+additive (see the S3 section below).
 The server need not import this repository to run its production backend.
 
 The [post-dump reliability port](POST_DUMP_BACKUP_RELIABILITY_PORT_REPORT.md)
@@ -40,12 +40,12 @@ timeouts; TLS and authorization refusals remain terminal.
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent 0.7.0 + extracted server revision | Protocol/HMAC/exclusion golden vectors checked; synthetic TLS enrollment/heartbeat tested on Ubuntu; real deployed pairing NOT TESTED           |
 | Server-Managed Source Access            | Existing host delegation, modes/version 1, revision/apply/lease/receipt checks preserved; server must support them                              |
-| Filesystem envelopes 1–4                | Existing parser retained; v4 for exclusions; unknown versions/fields refuse                                                                     |
+| Filesystem envelopes 1–5                | 1–4 unchanged and SFTP-only; 5 adds S3 and sealed secrets for Agents that advertise `backupPayloadVersion: 5`; unknown versions/fields refuse |
 | Database/hooks lifecycle versions 1/2   | Existing engines, multiple DB limits, root-owned tools and constrained hooks unchanged; real DB integration NOT TESTED by the synthetic fixture |
 | Older server or Agent                   | Capability/version negotiation remains required; no claim that every historic release is supported                                              |
 | Existing monorepo-installed Agent       | Ordinary upgrade REFUSED; explicit `--migrate-monorepo` transaction ([guide](MONOREPO_MIGRATION.md)): exact provenance, same drain/health/rollback   |
 | Existing standalone installation        | App-only upgrade/rollback with its own committed source and distribution marker; real systemd lifecycle NOT TESTED locally                      |
-| Server replication/recovery             | Remains server-only; Agent receives no S3 replica key or Internal root privileges                                                               |
+| Server replication/recovery             | Remains server-only; the Agent receives the S3 key of its own S3-primary plans only; never replica keys or Internal root privileges |
 | ARM64/non-systemd/custom layout         | UNSUPPORTED for these installer/upgrade contracts                                                                                               |
 
 `contracts/v0.7.0.json` contains synthetic **server-generated** HMAC canonical
@@ -87,3 +87,36 @@ Capabilities alone do not authorize a path, hook, DB or operation. Current serve
 checks remain authoritative for admissions and unsupported exclusions; the Agent
 revalidates signed versioned payloads and effective host policy at execution.
 Do not send an unsupported request and assume ignored fields are safe.
+
+## S3 repositories (contract `pluton-agent-0.8.0`)
+
+Agent 0.8.0 adds two optional inventory capability fields:
+`repositoryBackends: ["sftp", "s3"]` and `backupPayloadVersion: 5`. The Pluton
+server validates the inventory with a strict schema, so a server without stage 1
+S3 support **refuses the 0.8.0 enrollment and heartbeat**. Deploy the compatible
+server first, then install or upgrade Agents; roll back in the reverse order,
+Agent first, then server.
+
+`BACKUP_FILESYSTEM` payload version 5 may name `rclone.type` `sftp` or `s3`. Every
+secret (repository password, SFTP `pass`, S3 `access_key_id` and
+`secret_access_key`, and every database password, sealed as `lifecycle.database`
+for lifecycle shape 1 or under its `databaseId` in `lifecycle.databases`) is
+inside `sealed`; the plain lifecycle carries no `password`. The Agent restores
+each database password into its entry before use and refuses a payload with a
+plain database password, a database without a sealed password or a sealed
+password without a database. Sealing uses HKDF-SHA256 over the per-Agent secret
+with info `pluton-agent-command-secrets-v1`, AES-256-GCM with a 12-byte nonce and
+16-byte tag, and additional data made of that label, the command ID and the lease
+token separated by newlines. Plain options never contain those keys; such a
+payload is refused. The command HMAC still covers the whole payload. Versions 1
+to 4 are unchanged and SFTP-only; an Agent that does not advertise version 5 keeps
+receiving them.
+
+Version 5 keeps the source rules of the version the server would otherwise send:
+the version 4 exclusion grammar, the pre-backup scan only when exclusions are
+present, and version 3 source binding and receipt recovery when the lifecycle is
+version 2.
+
+`contracts/v0.8.0.json` holds the synthetic heartbeat request, a signed version 5
+S3 command and the sealing vector copied verbatim from the approved design; the
+server test suite uses the same sealing vector.
