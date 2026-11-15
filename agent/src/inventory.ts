@@ -12,7 +12,7 @@ import {
   detectDatabaseBinary,
 } from "./lifecyclePolicy.js";
 
-export const AGENT_VERSION = "0.7.1";
+export const AGENT_VERSION = "0.8.0";
 
 const SAFE_COMMANDS: AgentCapabilities["commandTypes"] = [
   "PING",
@@ -106,6 +106,9 @@ export function collectInventory(input: {
     ...(input.sourceAccess ? { sourceAccess: input.sourceAccess } : {}),
     capabilities: {
       backupExclusionsVersion: 1,
+      // S3 design 10.1. The server's strict inventory schema must accept these first.
+      repositoryBackends: ["sftp", "s3"],
+      backupPayloadVersion: 5,
       ...(input.sourceAccess
         ? {
             sourceAccessVersion: 1 as const,

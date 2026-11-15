@@ -49,3 +49,24 @@ test('release checksum verification rejects corruption, traversal, duplicates an
     assert.throws(() => verifyRelease(root));
   }
 });
+
+test('release identity accepts the 0.8 series and refuses unsupported versions', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-release-version-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const files = ['example-source.tar.gz', 'example-app.tar.gz'];
+  for (const f of files) fs.writeFileSync(path.join(root, f), 'synthetic archive');
+  const sha256 = crypto.createHash('sha256').update('synthetic archive').digest('hex');
+  const manifest = (version) => ({
+    format: 1,
+    version,
+    sourceCommit: 'a'.repeat(40),
+    platform: 'linux-x64',
+    artifacts: files.map((file) => ({ file, sha256 })),
+  });
+  fs.writeFileSync(path.join(root, 'release-manifest.json'), JSON.stringify(manifest('v0.8.0')));
+  assert.equal(verifyRelease(root).version, 'v0.8.0');
+  for (const version of ['v0.9.0', 'v1.0.0', '0.8.0']) {
+    fs.writeFileSync(path.join(root, 'release-manifest.json'), JSON.stringify(manifest(version)));
+    assert.throws(() => verifyRelease(root), /release identity/);
+  }
+});

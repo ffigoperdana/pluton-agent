@@ -1,0 +1,65 @@
+{
+  "format": 1,
+  "contract": "pluton-agent-0.8.0",
+  "description": "Synthetic stage 1 S3 repository vectors from the approved wire contract (Pluton server repository, docs/S3_AGENT_REPOSITORY_DESIGN.md section 10). Sealing values are section 10.4 verbatim; request and command signatures use the unchanged 0.7.0 HMAC canonical forms. The 0.7.0 vectors remain valid.",
+  "request": {
+    "secret": "synthetic-agent-secret-0123456789abcdef",
+    "timestamp": "4102444800000",
+    "nonce": "synthetic-nonce-01",
+    "method": "POST",
+    "path": "/api/agent/heartbeat",
+    "body": "{\"agentVersion\":\"0.8.0\",\"capabilities\":{\"backupExclusionsVersion\":1,\"repositoryBackends\":[\"sftp\",\"s3\"],\"backupPayloadVersion\":5}}",
+    "signature": "beaDgqLpYlabcqnG4x3vdfq44ICD3+U+unhFyHi0/gc="
+  },
+  "command": {
+    "secret": "synthetic-agent-secret-0123456789abcdef",
+    "id": "cmd-synthetic-01",
+    "type": "BACKUP_FILESYSTEM",
+    "payload": {
+      "version": 5,
+      "backupId": "backup-01",
+      "planId": "plan-01",
+      "sourcePath": "/srv/example-app",
+      "excludes": [".git"],
+      "sourceDiagnosticsVersion": 1,
+      "repository": {
+        "remoteName": "pluton",
+        "path": "bucket-01/pluton/app-01",
+        "initialize": true
+      },
+      "rclone": {
+        "type": "s3",
+        "options": {
+          "provider": "Other",
+          "endpoint": "https://s3.example.internal",
+          "force_path_style": "true",
+          "use_accept_encoding_gzip": "false",
+          "no_check_bucket": "true"
+        }
+      },
+      "sealed": {
+        "alg": "A256GCM",
+        "kid": "pluton-agent-command-secrets-v1",
+        "nonce": "AAECAwQFBgcICQoL",
+        "ciphertext": "jh0qetVE17GJz08s3DXhomumBqDIVOhzX3A4LgVFJeiH9JSKr4qR7OowvN0duifn639ReyzbjXGWiSEWAaymlLJKNnxwbrP+vLmuRdk9vI+wuUG8cJhENnxGV0LXHElNyPLQME0jaSjTfM7T0n9LTBr7V76enQuphACHq53aFDwiyFLa5p/2ML2748FcdivP43U+",
+        "tag": "pUKJ+stiEzlyVi8BFN6biQ=="
+      }
+    },
+    "idempotencyKey": "idempotency-01",
+    "leaseExpiresAt": "2099-01-01T00:00:00.000Z",
+    "leaseToken": "0123456789abcdef0123456789abcdef0123456789abcdef",
+    "signatureTimestamp": "4102444800000",
+    "signature": "he24m4tnFkK87pwp6d06g8nP0hv8xh7l+1igrmqkWRw="
+  },
+  "sealing": {
+    "secret": "synthetic-agent-secret-0123456789abcdef",
+    "commandId": "cmd-synthetic-01",
+    "leaseToken": "0123456789abcdef0123456789abcdef0123456789abcdef",
+    "info": "pluton-agent-command-secrets-v1",
+    "derivedKeyHex": "1f35dc3e9cf013165a2353883369bbfa7edd62b56072b3413c8074e2ffb93fac",
+    "nonce": "AAECAwQFBgcICQoL",
+    "plaintext": "{\"repositoryPassword\":\"synthetic-repository-password-01\",\"rclone\":{\"access_key_id\":\"SYNTHETICKEY01\",\"secret_access_key\":\"synthetic-secret-key-01\"}}",
+    "ciphertext": "jh0qetVE17GJz08s3DXhomumBqDIVOhzX3A4LgVFJeiH9JSKr4qR7OowvN0duifn639ReyzbjXGWiSEWAaymlLJKNnxwbrP+vLmuRdk9vI+wuUG8cJhENnxGV0LXHElNyPLQME0jaSjTfM7T0n9LTBr7V76enQuphACHq53aFDwiyFLa5p/2ML2748FcdivP43U+",
+    "tag": "pUKJ+stiEzlyVi8BFN6biQ=="
+  }
+}

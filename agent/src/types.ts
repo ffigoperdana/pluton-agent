@@ -41,6 +41,10 @@ export type AgentCapabilities = {
   hooksConfigured?: boolean;
   sourceAccessVersion?: 1;
   sourceAccessModesVersion?: 1;
+  /** Repository types this Agent backs up to (S3 design 10.1); always contains "sftp". */
+  repositoryBackends?: ("sftp" | "s3")[];
+  /** Highest BACKUP_FILESYSTEM payload version this Agent accepts (S3 design 10.1). */
+  backupPayloadVersion?: 5;
 };
 
 export type AgentInventory = {

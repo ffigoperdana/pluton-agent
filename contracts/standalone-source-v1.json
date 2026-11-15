@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "agentVersion": "0.7.1",
+  "agentVersion": "0.8.0",
   "baseRevision": "095088beeb3a10dc5fdda4f55db07fa4d17240be",
   "extractionManifestSha256": "418785c9cdf1d3986b19b5671e30a612b7ac791f63b1201f136a274e66fb3404",
   "changes": [
@@ -101,10 +101,16 @@
       "reason": "Use exclusive enrollment persistence and expose an explicit read-only HTTPS network diagnostic with no credentials or identity options. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     },
     {
+      "file": "agent/src/inventory.test.ts",
+      "extractedSha256": "418e4e6d098f739ec21d24422bb12708045c8cc5db6dd42100d413b0e13cb797",
+      "sha256": "dae31f12a4bfb746ae929c54c54e039a4dd1a861f3ecf60300ae97230e3aad80",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
+    },
+    {
       "file": "agent/src/inventory.ts",
       "extractedSha256": "22d254eac93e3e5c5c38b184b08ebd9b9dc94d905fc5ac0e28eacc0b27529910",
-      "sha256": "00a4190bb27d508541b1a76bcb64116aa6c9c8abb6dc78a1b65b77a1b02a177e",
-      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+      "sha256": "b991c60767032502e6c267bb43472b659fabd7cae50fc4d29a1ea84f40bdd04a",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     },
     {
       "file": "agent/src/lifecyclePolicy.ts",
@@ -199,7 +205,7 @@
     {
       "file": "agent/src/types.ts",
       "extractedSha256": "591c87bf41b4f7b4c2727cf5c3140e321b6fdacbdb74ece3e21de3eb6be7f713",
-      "sha256": "a8e9b8c98f5086c4b0558a3acb783e4bdc77cf7e9e9a515d63b05bbad010f3ea",
+      "sha256": "4b5a7e812ee9d782a9255e98d46d89da6467433289e81b8c6162b6903c68ff23",
       "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     }
   ]
