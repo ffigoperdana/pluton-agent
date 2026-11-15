@@ -157,6 +157,13 @@ async function runOnceWork(
         );
       const result = await executeFilesystemBackup({
         payload: command.payload,
+        // client.poll() verified this command's HMAC with identity.secret; version 5
+        // secrets are sealed to the same secret, this command ID and this lease token.
+        commandSeal: {
+          secret: identity.secret,
+          commandId: command.id,
+          leaseToken: command.leaseToken,
+        },
         config,
         allowedRoots: currentPolicy?.effectiveRoots || roots,
         serverManagedSource:

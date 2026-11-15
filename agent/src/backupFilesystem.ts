@@ -1592,6 +1592,8 @@ export function appendSourceBackupExcludes(
 
 export async function executeFilesystemBackup(input: {
   payload: Record<string, unknown>;
+  /** Leased-command context that opens version 5 sealed secrets. Never logged. */
+  commandSeal?: CommandSealContext;
   config: AgentConfig;
   allowedRoots: string[];
   serverManagedSource?: boolean;
@@ -1645,7 +1647,10 @@ export async function executeFilesystemBackup(input: {
   };
 
   try {
-    const payload = parseBackupFilesystemPayload(input.payload);
+    const payload = parseBackupFilesystemPayload(
+      input.payload,
+      input.commandSeal,
+    );
     setStage("payload-validation", "command accepted");
 
     setStage("source-validation");
