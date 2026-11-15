@@ -50,6 +50,12 @@ import {
   type LifecycleReport,
   type LifecycleStage,
 } from "./lifecyclePolicy.js";
+import {
+  openSealedCommandSecrets,
+  SealedSecretsError,
+  type CommandSealContext,
+  type SealedCommandSecrets,
+} from "./sealedSecrets.js";
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const PROGRESS_INTERVAL_MS = 5_000;
@@ -62,9 +68,28 @@ const PROGRESS_INTERVAL_MS = 5_000;
  */
 const SFTP_OPTION_KEYS = new Set(["host", "port", "user", "pass"]);
 
+/** Payload version 5 plain options (S3 design 10.2). Credentials only travel in `sealed`. */
+const SFTP_PLAIN_OPTION_KEYS = new Set(["host", "port", "user"]);
+const S3_PLAIN_OPTION_KEYS = new Set([
+  "provider",
+  "endpoint",
+  "region",
+  "location_constraint",
+  "acl",
+  "force_path_style",
+  "use_accept_encoding_gzip",
+  "no_check_bucket",
+]);
+const SEALED_ONLY_KEYS = new Set([
+  "pass",
+  "access_key_id",
+  "secret_access_key",
+  "repositoryPassword",
+]);
+
 export type BackupFilesystemPayload = {
   sourceDiagnosticsVersion?: 1;
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   lifecycle?: BackupLifecycle;
   backupId: string;
   planId: string;
@@ -72,13 +97,17 @@ export type BackupFilesystemPayload = {
   excludes: string[];
   repository: {
     remoteName: "pluton";
+    /** SFTP directory, or `bucket/prefix` for S3 (version 5 only). */
     path: string;
     initialize: boolean;
   };
   rclone: {
-    type: "sftp";
+    /** Versions 1 to 4 are SFTP-only; version 5 may name S3. */
+    type: "sftp" | "s3";
+    /** Plain options plus, in version 5, the opened sealed credentials. Never logged. */
     options: Record<string, string>;
   };
+  /** Plain in versions 1 to 4, opened from `sealed` in version 5. Never logged. */
   repositoryPassword: string;
 };
 
@@ -457,13 +486,173 @@ function validateRcloneOptions(value: unknown): Record<string, string> {
   return result;
 }
 
+function validateSftpPlainOptions(value: unknown): Record<string, string> {
+  const input = asRecord(value, "SFTP configuration");
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(input)) {
+    if (SEALED_ONLY_KEYS.has(key))
+      throw new Error("SFTP credentials must be sealed.");
+    if (!SFTP_PLAIN_OPTION_KEYS.has(key))
+      throw new Error("SFTP configuration contains an unsupported option.");
+    result[key] = requiredString(entry, `SFTP option ${key}`, 16_384);
+  }
+  if (!result.host || !result.user)
+    throw new Error("SFTP host and user are required.");
+  return result;
+}
+
+function validateS3PlainOptions(value: unknown): Record<string, string> {
+  const input = asRecord(value, "S3 configuration");
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(input)) {
+    if (SEALED_ONLY_KEYS.has(key))
+      throw new Error("S3 credentials must be sealed.");
+    if (!S3_PLAIN_OPTION_KEYS.has(key))
+      throw new Error("S3 configuration contains an unsupported option.");
+    result[key] = requiredString(entry, `S3 option ${key}`, 1_024);
+  }
+  let endpoint: URL | undefined;
+  try {
+    endpoint = new URL(result.endpoint || "");
+  } catch {
+    endpoint = undefined;
+  }
+  if (
+    !endpoint ||
+    endpoint.protocol !== "https:" ||
+    endpoint.origin !== result.endpoint
+  )
+    throw new Error("S3 endpoint must be an HTTPS origin.");
+  if (result.force_path_style !== "true")
+    throw new Error("S3 path-style addressing is required.");
+  if (result.use_accept_encoding_gzip !== "false")
+    throw new Error("S3 transfer compression must be disabled.");
+  if (
+    result.no_check_bucket !== undefined &&
+    result.no_check_bucket !== "true" &&
+    result.no_check_bucket !== "false"
+  )
+    throw new Error("S3 bucket check option is invalid.");
+  for (const key of ["provider", "region", "location_constraint", "acl"]) {
+    if (
+      result[key] !== undefined &&
+      !/^[A-Za-z0-9._-]{1,128}$/.test(result[key])
+    )
+      throw new Error(`S3 option ${key} is invalid.`);
+  }
+  return result;
+}
+
+/** S3 repositories are a prefix inside a bucket; the bucket root is never a repository. */
+function validateS3RepositoryPath(value: unknown): string {
+  const repositoryPath = validateRepositoryPath(value);
+  const segments = repositoryPath.split("/");
+  if (
+    repositoryPath.includes("\\") ||
+    segments.length < 2 ||
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  )
+    throw new Error("S3 repository path must be a prefix inside a bucket.");
+  return repositoryPath;
+}
+
+/** Open version 5 secrets and merge them into the validated plain options. */
+function openVersion5Secrets(
+  type: "sftp" | "s3",
+  optionsValue: unknown,
+  sealedValue: unknown,
+  commandSeal: CommandSealContext | undefined,
+): {
+  repositoryPassword: string;
+  options: Record<string, string>;
+  lifecycle: SealedCommandSecrets["lifecycle"];
+} {
+  const plain =
+    type === "s3"
+      ? validateS3PlainOptions(optionsValue)
+      : validateSftpPlainOptions(optionsValue);
+  if (!commandSeal)
+    throw new Error(
+      "Sealed command secrets require the leased command context.",
+    );
+  const secrets = openSealedCommandSecrets(sealedValue, commandSeal);
+  const { pass, access_key_id, secret_access_key } = secrets.rclone;
+  if (type === "sftp") {
+    if (!pass || access_key_id !== undefined || secret_access_key !== undefined)
+      throw new SealedSecretsError();
+    return {
+      repositoryPassword: secrets.repositoryPassword,
+      options: { ...plain, pass },
+      lifecycle: secrets.lifecycle,
+    };
+  }
+  if (!access_key_id || !secret_access_key || pass !== undefined)
+    throw new SealedSecretsError();
+  return {
+    repositoryPassword: secrets.repositoryPassword,
+    options: { ...plain, access_key_id, secret_access_key },
+    lifecycle: secrets.lifecycle,
+  };
+}
+
+/**
+ * Version 5 database passwords travel sealed (S3 design 10.3). Restore each one
+ * into a copy of its plain lifecycle entry; the signed payload object is never
+ * modified. A plain password, a database without a sealed password or a sealed
+ * password without a matching database refuses the command.
+ */
+function withSealedDatabasePasswords(
+  lifecycleValue: unknown,
+  sealed: SealedCommandSecrets["lifecycle"],
+): unknown {
+  const unmatched = new Map(Object.entries(sealed?.databases ?? {}));
+  let singleUnmatched = sealed?.database !== undefined;
+  const restore = (entry: unknown, password: string | undefined) => {
+    const database = asRecord(entry, "Database configuration");
+    if (Object.hasOwn(database, "password"))
+      throw new Error("Version 5 database passwords must be sealed.");
+    if (password === undefined)
+      throw new Error("A database has no sealed password.");
+    return { ...database, password };
+  };
+  let restored: unknown = lifecycleValue;
+  if (lifecycleValue !== undefined) {
+    const lifecycle = asRecord(lifecycleValue, "Lifecycle configuration");
+    const copy: Record<string, unknown> = { ...lifecycle };
+    if (lifecycle.database !== undefined) {
+      copy.database = restore(lifecycle.database, sealed?.database);
+      singleUnmatched = false;
+    }
+    if (Array.isArray(lifecycle.databases))
+      copy.databases = lifecycle.databases.map((entry) => {
+        const databaseId = asRecord(entry, "Database configuration").databaseId;
+        const password =
+          typeof databaseId === "string"
+            ? unmatched.get(databaseId)
+            : undefined;
+        if (typeof databaseId === "string") unmatched.delete(databaseId);
+        return restore(entry, password);
+      });
+    restored = copy;
+  }
+  if (singleUnmatched || unmatched.size)
+    throw new Error("A sealed database password has no matching database.");
+  return restored;
+}
+
 /**
  * Parse the short, server-signed workflow envelope. Unknown fields are refused
  * so this cannot gradually turn into a generic remote execution protocol.
+ * Version 5 (S3 design 10.2) adds S3 and carries every secret in `sealed`,
+ * opened with the leased command context before any file is written.
  */
 export function parseBackupFilesystemPayload(
   value: Record<string, unknown>,
+  commandSeal?: CommandSealContext,
 ): BackupFilesystemPayload {
+  const sealedVersion = value.version === 5;
+  if (sealedVersion && Object.hasOwn(value, "repositoryPassword"))
+    throw new Error("Version 5 secrets must be sealed.");
   const allowed = new Set([
     "version",
     "backupId",
@@ -472,14 +661,14 @@ export function parseBackupFilesystemPayload(
     "excludes",
     "repository",
     "rclone",
-    "repositoryPassword",
+    sealedVersion ? "sealed" : "repositoryPassword",
     "sourceDiagnosticsVersion",
-    ...([2, 3, 4].includes(value.version as number) ? ["lifecycle"] : []),
+    ...([2, 3, 4, 5].includes(value.version as number) ? ["lifecycle"] : []),
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
     throw new Error("Backup command contains unsupported fields.");
   }
-  if (![1, 2, 3, 4].includes(value.version as number))
+  if (![1, 2, 3, 4, 5].includes(value.version as number))
     throw new Error("Backup command version is unsupported.");
   if (
     value.sourceDiagnosticsVersion !== undefined &&
@@ -494,22 +683,37 @@ export function parseBackupFilesystemPayload(
   ) {
     throw new Error("Repository configuration is invalid.");
   }
-  if (rclone.type !== "sftp")
+  if (!sealedVersion && rclone.type !== "sftp")
     throw new Error("Only SFTP storage is supported by this agent.");
+  if (sealedVersion && rclone.type !== "sftp" && rclone.type !== "s3")
+    throw new Error("Storage type is unsupported by this agent.");
+  const storageType = rclone.type as "sftp" | "s3";
+  const opened = sealedVersion
+    ? openVersion5Secrets(
+        storageType,
+        rclone.options,
+        value.sealed,
+        commandSeal,
+      )
+    : undefined;
   const password = requiredString(
-    value.repositoryPassword,
+    opened ? opened.repositoryPassword : value.repositoryPassword,
     "Repository password",
     512,
   );
   if (password.length < 20) throw new Error("Repository password is invalid.");
+  const lifecycleInput = opened
+    ? withSealedDatabasePasswords(value.lifecycle, opened.lifecycle)
+    : value.lifecycle;
   const lifecycle =
     value.version === 1 ||
-    (value.version === 4 && value.lifecycle === undefined)
+    ((value.version === 4 || value.version === 5) &&
+      lifecycleInput === undefined)
       ? undefined
-      : parseBackupLifecycle(value.lifecycle);
+      : parseBackupLifecycle(lifecycleInput);
   if (
     lifecycle &&
-    value.version !== 4 &&
+    (value.version === 2 || value.version === 3) &&
     lifecycle.version !== (value.version === 3 ? 2 : 1)
   )
     throw new Error("Incompatible lifecycle envelope.");
@@ -523,15 +727,21 @@ export function parseBackupFilesystemPayload(
     planId: validateId(value.planId, "Plan ID"),
     sourcePath: requiredString(value.sourcePath, "Source path", 4_096),
     excludes:
-      value.version === 4
+      value.version === 4 || value.version === 5
         ? parseBackupExclusions(value.excludes)
         : validateExcludes(value.excludes),
     repository: {
       remoteName: "pluton",
-      path: validateRepositoryPath(repository.path),
+      path:
+        storageType === "s3"
+          ? validateS3RepositoryPath(repository.path)
+          : validateRepositoryPath(repository.path),
       initialize: repository.initialize,
     },
-    rclone: { type: "sftp", options: validateRcloneOptions(rclone.options) },
+    rclone: {
+      type: storageType,
+      options: opened ? opened.options : validateRcloneOptions(rclone.options),
+    },
     repositoryPassword: password,
   };
 }

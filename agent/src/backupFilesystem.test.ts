@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import {
   chmod,
   mkdir,
@@ -18,6 +19,7 @@ import {
   parseBackupFilesystemPayload,
   writeTemporaryRcloneConfig,
 } from "./backupFilesystem.js";
+import { SealedSecretsError } from "./sealedSecrets.js";
 
 /** The real agent runs on Linux; executable shebang fixtures are not portable on Windows. */
 const linuxExecutionTest = process.platform === "win32" ? test.skip : test;
@@ -44,6 +46,115 @@ const validPayload = {
   },
   repositoryPassword: "test-only-repository-password-value",
 };
+/** Leased-command context of the S3 design section 10.4 vector. */
+const sealContext = {
+  secret: "synthetic-agent-secret-0123456789abcdef",
+  commandId: "cmd-synthetic-01",
+  leaseToken: "0123456789abcdef0123456789abcdef0123456789abcdef",
+};
+const SEAL_LABEL = "pluton-agent-command-secrets-v1";
+
+/** Independent test sealer (node:crypto only); the Agent itself only opens. */
+function sealForTest(
+  plaintext: unknown,
+  context = sealContext,
+  nonce = crypto.randomBytes(12),
+) {
+  const key = Buffer.from(
+    crypto.hkdfSync(
+      "sha256",
+      Buffer.from(context.secret, "utf8"),
+      Buffer.alloc(0),
+      Buffer.from(SEAL_LABEL, "utf8"),
+      32,
+    ),
+  );
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce, {
+    authTagLength: 16,
+  });
+  cipher.setAAD(
+    Buffer.from(
+      `${SEAL_LABEL}\n${context.commandId}\n${context.leaseToken}`,
+      "utf8",
+    ),
+  );
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(plaintext), "utf8"),
+    cipher.final(),
+  ]);
+  return {
+    alg: "A256GCM",
+    kid: SEAL_LABEL,
+    nonce: nonce.toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+  };
+}
+
+/** S3 design section 10.4 sealed field, verbatim. */
+const vectorSealed = {
+  alg: "A256GCM",
+  kid: "pluton-agent-command-secrets-v1",
+  nonce: "AAECAwQFBgcICQoL",
+  ciphertext:
+    "jh0qetVE17GJz08s3DXhomumBqDIVOhzX3A4LgVFJeiH9JSKr4qR7OowvN0duifn639ReyzbjXGWiSEWAaymlLJKNnxwbrP+vLmuRdk9vI+wuUG8cJhENnxGV0LXHElNyPLQME0jaSjTfM7T0n9LTBr7V76enQuphACHq53aFDwiyFLa5p/2ML2748FcdivP43U+",
+  tag: "pUKJ+stiEzlyVi8BFN6biQ==",
+};
+
+/** S3 design section 10.2 example with the 10.4 sealed field. */
+const s3Version5Payload = {
+  version: 5,
+  backupId: "backup-01",
+  planId: "plan-01",
+  sourcePath: "/srv/example-app",
+  excludes: [] as string[],
+  repository: {
+    remoteName: "pluton",
+    path: "bucket-01/pluton/app-01",
+    initialize: true,
+  },
+  rclone: {
+    type: "s3",
+    options: {
+      provider: "Other",
+      endpoint: "https://s3.example.internal",
+      force_path_style: "true",
+      use_accept_encoding_gzip: "false",
+      no_check_bucket: "true",
+    } as Record<string, string>,
+  },
+  sealed: vectorSealed,
+};
+
+function sftpVersion5Payload(
+  sourcePath = "/srv/example-app",
+  excludes: string[] = [],
+) {
+  return {
+    version: 5,
+    backupId: "backup-01",
+    planId: "plan-01",
+    sourcePath,
+    excludes,
+    repository: {
+      remoteName: "pluton",
+      path: "managed-repositories/example",
+      initialize: true,
+    },
+    rclone: {
+      type: "sftp",
+      options: {
+        host: "sftp.example.internal",
+        port: "22",
+        user: "backup-user",
+      } as Record<string, string>,
+    },
+    sealed: sealForTest({
+      repositoryPassword: validPayload.repositoryPassword,
+      rclone: { pass: validPayload.rclone.options.pass },
+    }),
+  };
+}
 
 test("accepts the fixed BACKUP_FILESYSTEM envelope", () => {
   const parsed = parseBackupFilesystemPayload(validPayload);
@@ -100,6 +211,530 @@ test("refuses traversal, control characters, and unexpected command fields", () 
         parentLookupTimeoutMs: 0,
       }),
     /unsupported fields/,
+  );
+});
+
+test("payload v5: opens the sealed S3 vector and merges the keys into the allowlisted options", () => {
+  const parsed = parseBackupFilesystemPayload(s3Version5Payload, sealContext);
+  assert.equal(parsed.version, 5);
+  assert.equal(parsed.rclone.type, "s3");
+  assert.deepEqual(parsed.rclone.options, {
+    provider: "Other",
+    endpoint: "https://s3.example.internal",
+    force_path_style: "true",
+    use_accept_encoding_gzip: "false",
+    no_check_bucket: "true",
+    access_key_id: "SYNTHETICKEY01",
+    secret_access_key: "synthetic-secret-key-01",
+  });
+  assert.equal(parsed.repositoryPassword, "synthetic-repository-password-01");
+  assert.equal(parsed.repository.path, "bucket-01/pluton/app-01");
+});
+
+test("payload v5: the SFTP password travels sealed and is merged before obscuring", () => {
+  const parsed = parseBackupFilesystemPayload(
+    sftpVersion5Payload(),
+    sealContext,
+  );
+  assert.equal(parsed.rclone.type, "sftp");
+  assert.deepEqual(parsed.rclone.options, {
+    host: "sftp.example.internal",
+    port: "22",
+    user: "backup-user",
+    pass: validPayload.rclone.options.pass,
+  });
+  assert.equal(parsed.repositoryPassword, validPayload.repositoryPassword);
+});
+
+test("payload v5: tampered, misbound or unkeyed sealed fields refuse the command", () => {
+  for (const context of [
+    { ...sealContext, commandId: "cmd-synthetic-02" },
+    { ...sealContext, leaseToken: "f".repeat(48) },
+    { ...sealContext, secret: "synthetic-other-agent-secret" },
+  ])
+    assert.throws(
+      () => parseBackupFilesystemPayload(s3Version5Payload, context),
+      SealedSecretsError,
+    );
+  const ciphertext = Buffer.from(vectorSealed.ciphertext, "base64");
+  ciphertext[10] ^= 1;
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        {
+          ...s3Version5Payload,
+          sealed: {
+            ...vectorSealed,
+            ciphertext: ciphertext.toString("base64"),
+          },
+        },
+        sealContext,
+      ),
+    SealedSecretsError,
+  );
+  assert.throws(
+    () => parseBackupFilesystemPayload(s3Version5Payload),
+    /leased command context/,
+  );
+  const { sealed: _sealed, ...unsealed } = s3Version5Payload;
+  assert.throws(
+    () => parseBackupFilesystemPayload(unsealed, sealContext),
+    SealedSecretsError,
+  );
+});
+
+test("payload v5: plaintext credentials and a top-level repository password are refused", () => {
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        {
+          ...s3Version5Payload,
+          repositoryPassword: "synthetic-repository-password-01",
+        },
+        sealContext,
+      ),
+    /must be sealed/,
+  );
+  for (const key of ["access_key_id", "secret_access_key", "pass"])
+    assert.throws(
+      () =>
+        parseBackupFilesystemPayload(
+          {
+            ...s3Version5Payload,
+            rclone: {
+              type: "s3",
+              options: {
+                ...s3Version5Payload.rclone.options,
+                [key]: "synthetic-plaintext",
+              },
+            },
+          },
+          sealContext,
+        ),
+      /must be sealed/,
+    );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        {
+          ...sftpVersion5Payload(),
+          rclone: {
+            type: "sftp",
+            options: {
+              host: "sftp.example.internal",
+              user: "backup-user",
+              pass: "synthetic-plaintext",
+            },
+          },
+        },
+        sealContext,
+      ),
+    /must be sealed/,
+  );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        {
+          ...s3Version5Payload,
+          sealed: sealForTest({
+            repositoryPassword: "synthetic-repository-password-01",
+            rclone: { access_key_id: "SYNTHETICKEY01" },
+          }),
+        },
+        sealContext,
+      ),
+    SealedSecretsError,
+  );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        {
+          ...sftpVersion5Payload(),
+          sealed: sealForTest({
+            repositoryPassword: validPayload.repositoryPassword,
+            rclone: {
+              pass: validPayload.rclone.options.pass,
+              access_key_id: "SYNTHETICKEY01",
+            },
+          }),
+        },
+        sealContext,
+      ),
+    SealedSecretsError,
+  );
+});
+
+test("payload v5: S3 options are allowlisted and HTTPS-only with path style and no transfer compression", () => {
+  const base = s3Version5Payload.rclone.options;
+  const withOptions = (options: Record<string, string>) => ({
+    ...s3Version5Payload,
+    rclone: { type: "s3", options },
+  });
+  assert.equal(
+    parseBackupFilesystemPayload(
+      withOptions({
+        ...base,
+        region: "us-east-1",
+        location_constraint: "us-east-1",
+        acl: "private",
+      }),
+      sealContext,
+    ).rclone.options.region,
+    "us-east-1",
+  );
+  const cases: [Record<string, string>, RegExp][] = [
+    [{ ...base, env_auth: "true" }, /unsupported option/],
+    [
+      { ...base, shared_credentials_file: "/root/.aws/credentials" },
+      /unsupported option/,
+    ],
+    [{ ...base, endpoint: "http://s3.example.internal" }, /HTTPS origin/],
+    [
+      { ...base, endpoint: "https://s3.example.internal/bucket-01" },
+      /HTTPS origin/,
+    ],
+    [
+      { ...base, endpoint: "https://user:secret@s3.example.internal" },
+      /HTTPS origin/,
+    ],
+    [{ ...base, endpoint: "https://s3.example.internal:443" }, /HTTPS origin/],
+    [
+      {
+        provider: "Other",
+        endpoint: base.endpoint,
+        use_accept_encoding_gzip: "false",
+      },
+      /path-style/,
+    ],
+    [{ ...base, force_path_style: "false" }, /path-style/],
+    [{ ...base, use_accept_encoding_gzip: "true" }, /transfer compression/],
+    [
+      { provider: "Other", endpoint: base.endpoint, force_path_style: "true" },
+      /transfer compression/,
+    ],
+    [{ ...base, no_check_bucket: "yes" }, /bucket check/],
+    [{ ...base, region: "us-east-1\nexec" }, /invalid/],
+    [{ ...base, acl: "private;x" }, /invalid/],
+  ];
+  for (const [options, message] of cases)
+    assert.throws(
+      () => parseBackupFilesystemPayload(withOptions(options), sealContext),
+      message,
+      JSON.stringify(options),
+    );
+});
+
+test("payload v5: S3 repositories must be a prefix inside a bucket", () => {
+  for (const repositoryPath of [
+    "bucket-01",
+    "/bucket-01/app-01",
+    "bucket-01//app-01",
+    "bucket-01/./app-01",
+    "bucket-01/app-01/",
+    "bucket-01\\app-01",
+    "bucket-01/../app-01",
+  ])
+    assert.throws(
+      () =>
+        parseBackupFilesystemPayload(
+          {
+            ...s3Version5Payload,
+            repository: {
+              ...s3Version5Payload.repository,
+              path: repositoryPath,
+            },
+          },
+          sealContext,
+        ),
+      /prefix inside a bucket|traversal/,
+      repositoryPath,
+    );
+});
+
+test("payload v5: versions 1 to 4 stay SFTP-only and newer versions are refused", () => {
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload({
+        ...validPayload,
+        version: 4,
+        rclone: { type: "s3", options: s3Version5Payload.rclone.options },
+      }),
+    /Only SFTP storage/,
+  );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        { ...s3Version5Payload, version: 6 },
+        sealContext,
+      ),
+    /unsupported/,
+  );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        { ...s3Version5Payload, rclone: { type: "b2", options: {} } },
+        sealContext,
+      ),
+    /Storage type is unsupported/,
+  );
+});
+
+test("payload v5: accepts sourceDiagnosticsVersion as today and refuses any trust setting in the payload", () => {
+  assert.equal(
+    parseBackupFilesystemPayload(
+      { ...s3Version5Payload, sourceDiagnosticsVersion: 1 },
+      sealContext,
+    ).sourceDiagnosticsVersion,
+    1,
+  );
+  assert.equal(
+    parseBackupFilesystemPayload(
+      { ...sftpVersion5Payload(), sourceDiagnosticsVersion: 1 },
+      sealContext,
+    ).sourceDiagnosticsVersion,
+    1,
+  );
+  assert.equal(
+    parseBackupFilesystemPayload(s3Version5Payload, sealContext)
+      .sourceDiagnosticsVersion,
+    undefined,
+  );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        { ...s3Version5Payload, sourceDiagnosticsVersion: 2 },
+        sealContext,
+      ),
+    /Source diagnostics version is unsupported/,
+  );
+  // Trust comes only from the Agent's own PLUTON_AGENT_STORAGE_CA_FILE (spec 6.1 point 2).
+  for (const key of ["ca_cert", "no_check_certificate", "SSL_CERT_FILE"])
+    assert.throws(
+      () =>
+        parseBackupFilesystemPayload(
+          {
+            ...s3Version5Payload,
+            rclone: {
+              type: "s3",
+              options: {
+                ...s3Version5Payload.rclone.options,
+                [key]: "/etc/ssl/certs/synthetic.pem",
+              },
+            },
+          },
+          sealContext,
+        ),
+      /unsupported option/,
+      key,
+    );
+  for (const field of ["trust", "storageCaFile", "caFile"])
+    assert.throws(
+      () =>
+        parseBackupFilesystemPayload(
+          { ...s3Version5Payload, [field]: "/etc/ssl/certs/synthetic.pem" },
+          sealContext,
+        ),
+      /unsupported fields/,
+      field,
+    );
+});
+
+test("payload v5: keeps the version 4 exclusion grammar and the optional lifecycle", () => {
+  assert.deepEqual(
+    parseBackupFilesystemPayload(
+      { ...s3Version5Payload, excludes: [" .cache/ ", "node_modules"] },
+      sealContext,
+    ).excludes,
+    [".cache", "node_modules"],
+  );
+  assert.throws(() =>
+    parseBackupFilesystemPayload(
+      { ...s3Version5Payload, excludes: ["../escape"] },
+      sealContext,
+    ),
+  );
+  assert.equal(
+    parseBackupFilesystemPayload(s3Version5Payload, sealContext).lifecycle,
+    undefined,
+  );
+  assert.equal(
+    parseBackupFilesystemPayload(
+      {
+        ...sftpVersion5Payload(),
+        lifecycle: {
+          version: 1,
+          preHook: { id: "prepare", args: [], timeoutSeconds: 5 },
+        },
+      },
+      sealContext,
+    ).lifecycle?.version,
+    1,
+  );
+});
+
+/** A version 2 lifecycle database entry without its password (sealed in version 5). */
+const databaseEntry = {
+  databaseId: "db_one",
+  engine: "mysql",
+  host: "127.0.0.1",
+  port: 3306,
+  tls: "local",
+  database: "example_db",
+  username: "backup_reader",
+  dumpFilename: "app.sql",
+  timeoutSeconds: 60,
+  maxDumpBytes: 4 * 1024 * 1024,
+  includeRoutines: false,
+  includeEvents: false,
+};
+
+function s3SealedWithDatabases(lifecycle: unknown) {
+  return sealForTest({
+    repositoryPassword: "synthetic-repository-password-01",
+    rclone: {
+      access_key_id: "SYNTHETICKEY01",
+      secret_access_key: "synthetic-secret-key-01",
+    },
+    lifecycle,
+  });
+}
+
+test("payload v5: database passwords are sealed per lifecycle shape and restored before use", () => {
+  const twoDatabases = {
+    version: 2,
+    databases: [
+      databaseEntry,
+      {
+        ...databaseEntry,
+        databaseId: "db_two",
+        database: "example_db2",
+        dumpFilename: "two.sql",
+      },
+    ],
+  };
+  const parsed = parseBackupFilesystemPayload(
+    {
+      ...s3Version5Payload,
+      lifecycle: twoDatabases,
+      sealed: s3SealedWithDatabases({
+        databases: {
+          db_one: "synthetic-db-password-01",
+          db_two: "synthetic-db\tpassword\n02",
+        },
+      }),
+    },
+    sealContext,
+  );
+  assert.equal(parsed.lifecycle?.version, 2);
+  assert.deepEqual(
+    parsed.lifecycle?.databases?.map((db) => [db.databaseId, db.password]),
+    [
+      ["db_one", "synthetic-db-password-01"],
+      ["db_two", "synthetic-db\tpassword\n02"],
+    ],
+  );
+  assert.ok(
+    twoDatabases.databases.every((db) => !("password" in db)),
+    "The signed payload object must not be modified.",
+  );
+  const { databaseId: _databaseId, ...singleDatabase } = databaseEntry;
+  assert.equal(
+    parseBackupFilesystemPayload(
+      {
+        ...sftpVersion5Payload(),
+        lifecycle: { version: 1, database: singleDatabase },
+        sealed: sealForTest({
+          repositoryPassword: validPayload.repositoryPassword,
+          rclone: { pass: validPayload.rclone.options.pass },
+          lifecycle: { database: "synthetic-db-password-01" },
+        }),
+      },
+      sealContext,
+    ).lifecycle?.database?.password,
+    "synthetic-db-password-01",
+  );
+  const refusals: [Record<string, unknown>, RegExp][] = [
+    [
+      {
+        ...s3Version5Payload,
+        lifecycle: {
+          version: 2,
+          databases: [{ ...databaseEntry, password: "synthetic-plaintext" }],
+        },
+        sealed: s3SealedWithDatabases({
+          databases: { db_one: "synthetic-db-password-01" },
+        }),
+      },
+      /database passwords must be sealed/,
+    ],
+    [
+      {
+        ...s3Version5Payload,
+        lifecycle: twoDatabases,
+        sealed: s3SealedWithDatabases({
+          databases: { db_one: "synthetic-db-password-01" },
+        }),
+      },
+      /no sealed password/,
+    ],
+    [{ ...s3Version5Payload, lifecycle: twoDatabases }, /no sealed password/],
+    [
+      {
+        ...s3Version5Payload,
+        lifecycle: twoDatabases,
+        sealed: s3SealedWithDatabases({ database: "synthetic-db-password-01" }),
+      },
+      /no sealed password/,
+    ],
+    [
+      {
+        ...s3Version5Payload,
+        lifecycle: twoDatabases,
+        sealed: s3SealedWithDatabases({
+          databases: {
+            db_one: "synthetic-db-password-01",
+            db_two: "synthetic-db-password-02",
+            db_three: "synthetic-db-password-03",
+          },
+        }),
+      },
+      /no matching database/,
+    ],
+    [
+      {
+        ...s3Version5Payload,
+        sealed: s3SealedWithDatabases({ database: "synthetic-db-password-01" }),
+      },
+      /no matching database/,
+    ],
+    [
+      {
+        ...s3Version5Payload,
+        lifecycle: {
+          version: 1,
+          preHook: { id: "prepare", args: [], timeoutSeconds: 5 },
+        },
+        sealed: s3SealedWithDatabases({ database: "synthetic-db-password-01" }),
+      },
+      /no matching database/,
+    ],
+  ];
+  for (const [candidate, message] of refusals)
+    assert.throws(
+      () => parseBackupFilesystemPayload(candidate, sealContext),
+      message,
+    );
+  // Versions 1 to 4 keep the plain password unchanged.
+  assert.equal(
+    parseBackupFilesystemPayload({
+      ...validPayload,
+      version: 3,
+      lifecycle: {
+        version: 2,
+        databases: [{ ...databaseEntry, password: "synthetic-db-password-01" }],
+      },
+    }).lifecycle?.databases?.[0].password,
+    "synthetic-db-password-01",
   );
 });
 

@@ -7,14 +7,14 @@
     {
       "file": "agent/src/backupFilesystem.test.ts",
       "extractedSha256": "3f952363db42a6e419a7392fd2b0e8d0d764018a4c96b8397f18521fbe1030c7",
-      "sha256": "a7820a8a6b2788007f49e9c998427a66be33aea5002384dcd1abc29c271fe183",
-      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+      "sha256": "07aa603906b4b9e5fd0db74d2b29696bbd48ede229e32024440aacca8d183450",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     },
     {
       "file": "agent/src/backupFilesystem.ts",
       "extractedSha256": "b7ab6ce1f18ca0380e595f5ce543bbaa749955b0813a82325b18281e7d477e02",
-      "sha256": "f5956223785e346cadc6b9cd82b273929256f63e9b30ad731342747c7fe2d35a",
-      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
+      "sha256": "a82582876c8d65ebf91221b16bb7bd454cccad94471d90a2b10cf4c0a107bae7",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     },
     {
       "file": "agent/src/backupLifecycle.ts",
