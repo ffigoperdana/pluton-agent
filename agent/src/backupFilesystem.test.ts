@@ -1999,6 +1999,102 @@ for (const scenario of [
     },
   );
 
+const SYNTHETIC_SOURCE_READ_ERRORS = [
+  "error: /srv/example-app/a.txt: read /srv/example-app/a.txt: i/o timeout",
+  "error: /srv/example-app/b.txt: open /srv/example-app/b.txt: connection timed out",
+  "error: /srv/example-app/c.txt: read /srv/example-app/c.txt: broken pipe",
+  "error: /srv/example-app/d.txt: unexpected EOF",
+  "error: /srv/example-app/AccessDenied-status code: 403.txt: lstat /srv/example-app/AccessDenied-status code: 403.txt: input/output error",
+  "open /srv/example-app/e.txt: connection reset by peer",
+  "Lstat /srv/example-app/f.txt: no route to host",
+  "cannot read /srv/example-app/g.txt: i/o timeout",
+].join("\n");
+
+for (const scenario of [
+  {
+    name: "only source read errors",
+    diagnostics: `${SYNTHETIC_SOURCE_READ_ERRORS}\nWarning: at least one source file could not be read\n`,
+    code: "restic-backup-failed",
+  },
+  {
+    name: "a source file named like an access error",
+    diagnostics:
+      "error: /srv/example-app/AccessDenied-status code: 403.txt: read /srv/example-app/AccessDenied-status code: 403.txt: EOF\n",
+    code: "restic-backup-failed",
+  },
+  {
+    name: "a Rclone transport line",
+    diagnostics:
+      'rclone: Failed to copy: Put "https://s3.example.internal/bucket-01/data": read tcp 192.0.2.10:1->192.0.2.11:443: i/o timeout\n',
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a Restic backend Save line",
+    diagnostics:
+      "Save(<data/0123456789>) returned error, retrying after 1s: i/o timeout\n",
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a backend signature line",
+    diagnostics:
+      "Load(<data/0123456789>, 0, 0) returned error: api error SignatureDoesNotMatch: The request signature we calculated does not match.\n",
+    code: "target-check-auth-failed",
+  },
+  {
+    name: "a backend AccessDenied line",
+    diagnostics:
+      "Fatal: unable to open repository: api error AccessDenied: Access Denied\n",
+    code: "target-check-access-failed",
+  },
+  {
+    name: "source errors mixed with one backend transport line",
+    diagnostics: `${SYNTHETIC_SOURCE_READ_ERRORS}\nrclone: Failed to copy: connection timed out\n`,
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a source file named like an auth error next to a backend timeout",
+    diagnostics:
+      "error: /srv/example-app/SignatureDoesNotMatch.txt: read /srv/example-app/SignatureDoesNotMatch.txt: EOF\nSave(<data/0123456789>) returned error: i/o timeout\n",
+    code: "target-check-transport-failed",
+  },
+])
+  linuxExecutionTest(
+    `S3: backup stderr with ${scenario.name} reports ${scenario.code}`,
+    async () => {
+      const fixture = await createS3ExecutionFixture({
+        backupExit: 1,
+        backupDiagnostics: scenario.diagnostics,
+      });
+      const stages: string[] = [];
+      try {
+        await assert.rejects(
+          executeFilesystemBackup({
+            ...s3ExecutionInput(fixture),
+            onStage: (event) => stages.push(`${event.stage}:${event.message}`),
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof BackupFilesystemError);
+            assert.equal(error.stage, "restic-backup");
+            assert.equal(error.code, scenario.code);
+            const text = JSON.stringify([error, stages]);
+            for (const leaked of [
+              "/srv/example-app",
+              "example.internal",
+              "192.0.2.",
+              "bucket-01",
+              "0123456789",
+              "AccessDenied-status",
+            ])
+              assert.ok(!text.includes(leaked), leaked);
+            return true;
+          },
+        );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
+
 linuxExecutionTest(
   "S3: SFTP Restic backup failures keep restic-backup-failed",
   async () => {

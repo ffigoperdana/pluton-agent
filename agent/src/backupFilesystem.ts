@@ -854,14 +854,38 @@ function classifyTargetFailure(
   return undefined;
 }
 
-/** Restic backup stderr also carries source errors, so only storage-specific provider text is classified. */
+/**
+ * Restic backup stderr lines that are source read errors (a network-mounted source can
+ * time out or reset like a storage transport). Restic prints them as `error: <abs path>: ...`
+ * and Go wraps the failing call (`open`, `lstat`, `read`, `readdir`) in the message.
+ * These lines are dropped before any storage pattern is tried.
+ */
+const BACKUP_SOURCE_READ_LINE =
+  /^(?:error: (?:\/|[A-Za-z]:[\\/])|(?:open|lstat|read|readdir|Lstat) |.*\bcan(?:not| not) read\b)/;
+/**
+ * Lines that clearly come from the storage path: Rclone stderr forwarded by Restic
+ * (`rclone: ` prefix), Restic backend calls (`Save(<`, `Load(<`, `Stat(<`, `Remove(<`,
+ * `List(`), repository open, lock and snapshot-save failures, and HTTP or S3 client text.
+ */
+const BACKUP_STORAGE_LINE =
+  /^rclone: |\b(?:Save|Load|Stat|Remove)\(<|\bList\(|unable to open repository|unable to create lock|unable to save snapshot|\bHTTP\b|api error|\bs3\.|operation error S3:/;
+
+/** Restic backup stderr also carries source errors, so only lines from the storage path are classified. */
 function classifyBackupStorageFailure(
   diagnostics: string,
 ): RepositoryTargetFailureCode | undefined {
-  if (S3_AUTHENTICATION_FAILURE.test(diagnostics))
+  const storage = diagnostics
+    .split(/\r\n|\r|\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        !BACKUP_SOURCE_READ_LINE.test(line) && BACKUP_STORAGE_LINE.test(line),
+    )
+    .join("\n");
+  if (S3_AUTHENTICATION_FAILURE.test(storage))
     return "target-check-auth-failed";
-  if (S3_ACCESS_FAILURE.test(diagnostics)) return "target-check-access-failed";
-  if (STORAGE_TRANSPORT_FAILURE.test(diagnostics))
+  if (S3_ACCESS_FAILURE.test(storage)) return "target-check-access-failed";
+  if (STORAGE_TRANSPORT_FAILURE.test(storage))
     return "target-check-transport-failed";
   return undefined;
 }
