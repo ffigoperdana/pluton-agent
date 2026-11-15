@@ -1129,11 +1129,18 @@ function rcloneConfigValue(value: string): string {
 export async function writeTemporaryRcloneConfig(
   dataDir: string,
   options: Record<string, string>,
+  type: "sftp" | "s3" = "sftp",
 ): Promise<{ directory: string; configPath: string }> {
   const directory = await mkdtemp(path.join(dataDir, "rclone-"));
   await chmod(directory, 0o700);
   const configPath = path.join(directory, "rclone.conf");
-  const lines = ["[pluton]", "type = sftp"];
+  // S3 keys stay plain in this 0600 file (rclone obscure is SFTP-only) and an S3
+  // remote never falls back to ambient AWS credentials of the Agent host.
+  const lines = [
+    "[pluton]",
+    `type = ${type}`,
+    ...(type === "s3" ? ["env_auth = false"] : []),
+  ];
   for (const key of Object.keys(options).sort()) {
     lines.push(`${key} = ${rcloneConfigValue(options[key])}`);
   }
@@ -1734,17 +1741,21 @@ export async function executeFilesystemBackup(input: {
       RESTIC_CACHE_DIR: path.join(input.config.dataDir, "restic-cache"),
     };
     const rcloneEnv: NodeJS.ProcessEnv = { PATH: env.PATH };
-    setStage("sftp-password-obscure");
-    const rcloneOptions = await obscureSensitiveSftpOptions(
-      rclone,
-      payload.rclone.options,
-      rcloneEnv,
-      input.shouldCancel,
-    );
+    let rcloneOptions = payload.rclone.options;
+    if (payload.rclone.type === "sftp") {
+      setStage("sftp-password-obscure");
+      rcloneOptions = await obscureSensitiveSftpOptions(
+        rclone,
+        payload.rclone.options,
+        rcloneEnv,
+        input.shouldCancel,
+      );
+    }
     setStage("temporary-storage-config");
     temporary = await writeTemporaryRcloneConfig(
       input.config.dataDir,
       rcloneOptions,
+      payload.rclone.type,
     );
     emitStage({
       stage: "temporary-storage-config",

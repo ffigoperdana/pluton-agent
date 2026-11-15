@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -20,6 +21,7 @@ import {
   writeTemporaryRcloneConfig,
 } from "./backupFilesystem.js";
 import { SealedSecretsError } from "./sealedSecrets.js";
+import type { AgentConfig } from "./types.js";
 
 /** The real agent runs on Linux; executable shebang fixtures are not portable on Windows. */
 const linuxExecutionTest = process.platform === "win32" ? test.skip : test;
@@ -1452,6 +1454,229 @@ linuxExecutionTest(
     } finally {
       await chmod(unreadable, 0o600);
       await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+/**
+ * Fake Rclone/Restic for S3 version 5 runs. The first `lsf` is the S3 access
+ * check (Task 7), any later `lsf` the empty-target check. Each call records its
+ * arguments and SSL_CERT_FILE; the config is copied for inspection.
+ */
+async function createS3ExecutionFixture(
+  options: {
+    accessExit?: number;
+    targetListing?: string;
+    targetExit?: number;
+    lsfDiagnostics?: string;
+    backupExit?: number;
+    backupDiagnostics?: string;
+  } = {},
+) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pluton-agent-s3-"));
+  const source = path.join(root, "source");
+  const dataDir = path.join(root, "state");
+  const binDir = path.join(root, "bin");
+  await Promise.all([mkdir(source), mkdir(dataDir), mkdir(binDir)]);
+  await writeFile(path.join(source, "app.txt"), "synthetic source\n");
+  await writeFile(
+    path.join(binDir, "rclone"),
+    `#!/usr/bin/env node
+import { appendFileSync, copyFileSync, existsSync, writeFileSync } from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+const config = process.env.RCLONE_CONFIG || "";
+if (!config) {
+  process.exitCode = 97;
+} else {
+  const state = path.dirname(path.dirname(config));
+  appendFileSync(path.join(state, "rclone.calls"), JSON.stringify(args) + "\\n");
+  appendFileSync(path.join(state, "rclone.env"), JSON.stringify({ SSL_CERT_FILE: process.env.SSL_CERT_FILE ?? null }) + "\\n");
+  if (args[0] === "lsf") {
+    copyFileSync(config, path.join(state, "rclone.config-copy"));
+    const access = !existsSync(path.join(state, "access-checked"));
+    writeFileSync(path.join(state, "access-checked"), "1");
+    process.stderr.write(${JSON.stringify(options.lsfDiagnostics ?? "")});
+    if (access) process.exitCode = ${options.accessExit ?? 0};
+    else {
+      process.stdout.write(${JSON.stringify(options.targetListing ?? "")});
+      process.exitCode = ${options.targetExit ?? 0};
+    }
+  }
+}
+`,
+  );
+  await writeFile(
+    path.join(binDir, "restic"),
+    `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+const state = path.dirname(path.dirname(process.env.RCLONE_CONFIG || ""));
+appendFileSync(path.join(state, "restic-calls"), JSON.stringify(args) + "\\n");
+appendFileSync(path.join(state, "restic.env"), JSON.stringify({ SSL_CERT_FILE: process.env.SSL_CERT_FILE ?? null, passwordOpened: process.env.RESTIC_PASSWORD === "synthetic-repository-password-01" }) + "\\n");
+if (args.includes("cat") && args.includes("config")) console.log(JSON.stringify({ version: 2, id: "c".repeat(64) }));
+else if (args.includes("snapshots")) process.exitCode = 10;
+else if (args.includes("backup")) {
+  process.stderr.write(${JSON.stringify(options.backupDiagnostics ?? "")});
+  if (${options.backupExit ?? 0} !== 0) process.exitCode = ${options.backupExit ?? 0};
+  else process.stdout.write(JSON.stringify({ message_type: "summary", snapshot_id: "abcdef0123456789", files_new: 0, files_changed: 0, files_unmodified: 0, dirs_new: 0, dirs_changed: 0, dirs_unmodified: 0, data_blobs: 0, tree_blobs: 0, data_added: 0, data_added_packed: 0, total_files_processed: 0, total_bytes_processed: 0, total_duration: 0 }) + "\\n");
+}
+`,
+  );
+  await Promise.all([
+    chmod(path.join(binDir, "rclone"), 0o755),
+    chmod(path.join(binDir, "restic"), 0o755),
+  ]);
+  return { root, source, dataDir, binDir };
+}
+
+function s3ExecutionInput(
+  fixture: Awaited<ReturnType<typeof createS3ExecutionFixture>>,
+  payload: Record<string, unknown> = {
+    ...s3Version5Payload,
+    sourcePath: fixture.source,
+  },
+  config: Partial<AgentConfig> = {},
+) {
+  return {
+    payload,
+    commandSeal: sealContext,
+    config: {
+      serverUrl: new URL("https://example.invalid"),
+      dataDir: fixture.dataDir,
+      allowedRoots: [fixture.source],
+      binDir: fixture.binDir,
+      allowInsecureHttp: false,
+      ...config,
+    },
+    allowedRoots: [fixture.source],
+    shouldCancel: async () => false,
+    onEvent: async () => undefined,
+  };
+}
+
+async function readJsonLines<T>(file: string): Promise<T[]> {
+  return (await readFile(file, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as T);
+}
+
+linuxExecutionTest(
+  "S3: writes a private type = s3 config with the plain sealed keys, never obscures, and backs up to the bucket prefix",
+  async () => {
+    const fixture = await createS3ExecutionFixture();
+    const stages: string[] = [];
+    try {
+      const result = await executeFilesystemBackup({
+        ...s3ExecutionInput(fixture),
+        onStage: (event) => stages.push(`${event.stage}:${event.message}`),
+      });
+      assert.equal(result.snapshotId, "abcdef0123456789");
+      const rcloneCalls = await readCalls(
+        path.join(fixture.dataDir, "rclone.calls"),
+      );
+      assert.ok(!rcloneCalls.some((args) => args[0] === "obscure"));
+      assert.ok(
+        rcloneCalls.some(
+          (args) =>
+            args[0] === "lsf" && args[1] === "pluton:bucket-01/pluton/app-01",
+        ),
+      );
+      assert.ok(
+        !stages.some((stage) => stage.startsWith("sftp-password-obscure:")),
+      );
+      assert.ok(
+        stages.includes(
+          "temporary-storage-config:temporary storage config created",
+        ),
+      );
+      const config = (
+        await readFile(path.join(fixture.dataDir, "rclone.config-copy"), "utf8")
+      ).split("\n");
+      assert.deepEqual(config.slice(0, 3), [
+        "[pluton]",
+        "type = s3",
+        "env_auth = false",
+      ]);
+      for (const line of [
+        "access_key_id = SYNTHETICKEY01",
+        "secret_access_key = synthetic-secret-key-01",
+        "endpoint = https://s3.example.internal",
+        "provider = Other",
+        "force_path_style = true",
+        "use_accept_encoding_gzip = false",
+        "no_check_bucket = true",
+      ])
+        assert.ok(config.includes(line), line);
+      const resticCalls = await readCalls(
+        path.join(fixture.dataDir, "restic-calls"),
+      );
+      for (const command of ["init", "backup"])
+        assert.ok(
+          resticCalls.some(
+            (args) =>
+              args.includes(command) &&
+              args[1] === "rclone:pluton:bucket-01/pluton/app-01",
+          ),
+          command,
+        );
+      assert.ok(
+        (
+          await readJsonLines<{ passwordOpened: boolean }>(
+            path.join(fixture.dataDir, "restic.env"),
+          )
+        ).every((entry) => entry.passwordOpened),
+      );
+      assert.ok(!JSON.stringify(stages).includes("synthetic-secret-key-01"));
+      assert.deepEqual(
+        (await readdir(fixture.dataDir)).filter((name) =>
+          name.startsWith("rclone-"),
+        ),
+        [],
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+permissionTest(
+  "S3: the temporary Rclone config is private and pins env_auth off",
+  async () => {
+    const dataDir = await mkdtemp(
+      path.join(os.tmpdir(), "pluton-agent-s3-config-"),
+    );
+    try {
+      const temporary = await writeTemporaryRcloneConfig(
+        dataDir,
+        {
+          endpoint: "https://s3.example.internal",
+          access_key_id: "SYNTHETICKEY01",
+          secret_access_key: "synthetic-secret-key-01",
+          force_path_style: "true",
+          use_accept_encoding_gzip: "false",
+        },
+        "s3",
+      );
+      assert.equal((await stat(temporary.directory)).mode & 0o777, 0o700);
+      assert.equal((await stat(temporary.configPath)).mode & 0o777, 0o600);
+      assert.equal(
+        await readFile(temporary.configPath, "utf8"),
+        "[pluton]\ntype = s3\nenv_auth = false\naccess_key_id = SYNTHETICKEY01\nendpoint = https://s3.example.internal\nforce_path_style = true\nsecret_access_key = synthetic-secret-key-01\nuse_accept_encoding_gzip = false\n",
+      );
+      await assert.rejects(
+        writeTemporaryRcloneConfig(
+          dataDir,
+          { endpoint: "https://s3.example.internal\n[other]" },
+          "s3",
+        ),
+        /unsafe value/,
+      );
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
     }
   },
 );
