@@ -24,6 +24,7 @@ readonly RCLONE_LINUX_AMD64_SHA256='982b5aa772841168f8e380f139e9e787b2a105403e32
 ACTION='install'
 SERVER_URL=''
 CA_FILE=''
+STORAGE_CA_FILE=''
 ALLOW_INSECURE_HTTP='false'
 ENROLLMENT_TOKEN=''
 TOKEN_STDIN='false'
@@ -76,6 +77,7 @@ Install options:
   --allowed-root <path>        Absolute source root; repeat for additional roots.
   --allow-insecure-http        Required only for an explicitly trusted-LAN HTTP server.
   --ca-file <path>             PEM file for a private HTTPS CA.
+  --storage-ca-file <path>     Root-owned PEM bundle for S3 repositories, passed to Restic/Rclone as SSL_CERT_FILE.
   --token <token>              Quick install only; exposes the one-time token to shell history/process listings.
   --token-stdin                Read the one-time enrollment token from standard input.
   --re-enroll                  Replace an existing local identity after confirmation.
@@ -154,6 +156,11 @@ parse_arguments() {
 			--ca-file)
 				[[ $# -ge 2 ]] || fail '--ca-file requires a file path.'
 				CA_FILE="$2"
+				shift 2
+				;;
+			--storage-ca-file)
+				[[ $# -ge 2 ]] || fail '--storage-ca-file requires a file path.'
+				STORAGE_CA_FILE="$2"
 				shift 2
 				;;
 			--token)
@@ -261,6 +268,7 @@ compatibility_preflight() {
 	if [[ -n "$CA_FILE" ]]; then
 		[[ "$CA_FILE" == /* && -f "$CA_FILE" && -r "$CA_FILE" ]] || fail '--ca-file must be an existing readable absolute PEM file.'
 	fi
+	validate_storage_ca_file
 	local source_file
 	for source_file in package.json pnpm-lock.yaml pnpm-workspace.yaml agent/package.json agent/tsconfig.json agent/src/index.ts contracts/extraction-source.json scripts/validate-standalone.mjs; do
 		[[ -f "$REPOSITORY_ROOT/$source_file" && ! -L "$REPOSITORY_ROOT/$source_file" ]] || fail 'Incomplete standalone source tree; use a reviewed immutable checkout.'
@@ -372,6 +380,9 @@ validate_agent_access_to_roots() {
 		[[ "$CA_FILE" == /* && -f "$CA_FILE" ]] || fail '--ca-file must be an existing absolute file.'
 		runuser -u "$AGENT_USER" -- test -r "$CA_FILE" || fail 'The pluton-agent account cannot read --ca-file.'
 	fi
+	if [[ -n "$STORAGE_CA_FILE" ]]; then
+		runuser -u "$AGENT_USER" -- test -r "$STORAGE_CA_FILE" || fail 'The pluton-agent account cannot read --storage-ca-file.'
+	fi
 }
 
 preserve_existing_optional_config() {
@@ -382,6 +393,29 @@ preserve_existing_optional_config() {
 	encoded="${encoded//\\\"/\"}"
 	CA_FILE="${encoded//\\\\/\\}"
 	log 'Preserving the existing private CA configuration.'
+}
+
+# The Agent passes this bundle to Restic and Rclone as SSL_CERT_FILE for S3
+# repositories only. Go still loads /etc/ssl/certs, so it adds the operator CA
+# and does not narrow trust.
+# The Agent itself re-checks root ownership of the whole path at backup time.
+validate_storage_ca_file() {
+	[[ -n "$STORAGE_CA_FILE" ]] || return 0
+	[[ "$STORAGE_CA_FILE" != *[[:cntrl:]]* ]] || fail '--storage-ca-file must not contain control characters.'
+	[[ "$STORAGE_CA_FILE" == /* && -f "$STORAGE_CA_FILE" && ! -L "$STORAGE_CA_FILE" && -r "$STORAGE_CA_FILE" ]] || fail '--storage-ca-file must be an existing readable absolute PEM file, not a symbolic link.'
+	if is_test_mode; then return 0; fi
+	[[ "$(stat -c '%u' -- "$STORAGE_CA_FILE")" == 0 ]] || fail '--storage-ca-file must be owned by root.'
+	(( (8#$(stat -c '%a' -- "$STORAGE_CA_FILE") & 8#022) == 0 )) || fail '--storage-ca-file must not be group- or world-writable.'
+}
+
+preserve_existing_storage_ca_config() {
+	[[ -z "$STORAGE_CA_FILE" && -f "$CONFIG_FILE" ]] || return 0
+	local encoded
+	encoded="$(sed -n 's/^PLUTON_AGENT_STORAGE_CA_FILE="\(.*\)"$/\1/p' "$CONFIG_FILE" | head -n 1)"
+	[[ -n "$encoded" ]] || return 0
+	encoded="${encoded//\\\"/\"}"
+	STORAGE_CA_FILE="${encoded//\\\\/\\}"
+	log 'Preserving the existing storage CA configuration.'
 }
 
 cleanup_stage() {
@@ -727,6 +761,9 @@ write_config() {
 			if [[ -n "$CA_FILE" ]]; then
 				printf 'PLUTON_AGENT_CA_FILE="%s"\n' "$(escape_environment_value "$CA_FILE")"
 			fi
+			if [[ -n "$STORAGE_CA_FILE" ]]; then
+				printf 'PLUTON_AGENT_STORAGE_CA_FILE="%s"\n' "$(escape_environment_value "$STORAGE_CA_FILE")"
+			fi
 		} > "$temporary"
 	)
 	if ! is_test_mode; then
@@ -887,6 +924,8 @@ install_agent() {
 	validate_platform
 	assert_no_service_before_activation
 	preserve_existing_optional_config
+	preserve_existing_storage_ca_config
+	validate_storage_ca_file
 	create_stage_root
 	prepare_update_rollback
 	if ! try_reuse_verified_install; then

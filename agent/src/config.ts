@@ -31,7 +31,16 @@ export function createAgentConfig(input: {
   hookRoot?: string;
   databaseBinDirs?: string;
   sourcePolicyFile?: string;
+  storageCaFile?: string;
 }): AgentConfig {
+  if (
+    input.storageCaFile &&
+    (!path.isAbsolute(input.storageCaFile) ||
+      /[\x00-\x1f\x7f]/.test(input.storageCaFile))
+  )
+    throw new Error(
+      "PLUTON_AGENT_STORAGE_CA_FILE must be an absolute file path.",
+    );
   if (!input.serverUrl)
     throw new Error("PLUTON_SERVER_URL or --server is required.");
   let serverUrl: URL;
@@ -80,6 +89,9 @@ export function createAgentConfig(input: {
     sourcePolicyFile: input.sourcePolicyFile
       ? path.resolve(input.sourcePolicyFile)
       : undefined,
+    storageCaFile: input.storageCaFile
+      ? path.resolve(input.storageCaFile)
+      : undefined,
   };
 }
 
@@ -100,5 +112,6 @@ export function configFromEnvironment(
     hookRoot: overrides.PLUTON_AGENT_HOOK_ROOT,
     databaseBinDirs: overrides.PLUTON_AGENT_DATABASE_BIN_DIRS,
     sourcePolicyFile: overrides.PLUTON_AGENT_SOURCE_POLICY_FILE,
+    storageCaFile: overrides.PLUTON_AGENT_STORAGE_CA_FILE,
   });
 }

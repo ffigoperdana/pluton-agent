@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -7,6 +9,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -16,8 +19,11 @@ import {
   BackupFilesystemError,
   executeFilesystemBackup,
   parseBackupFilesystemPayload,
+  sweepStaleStorageConfigs,
   writeTemporaryRcloneConfig,
 } from "./backupFilesystem.js";
+import { SealedSecretsError } from "./sealedSecrets.js";
+import type { AgentConfig } from "./types.js";
 
 /** The real agent runs on Linux; executable shebang fixtures are not portable on Windows. */
 const linuxExecutionTest = process.platform === "win32" ? test.skip : test;
@@ -44,6 +50,115 @@ const validPayload = {
   },
   repositoryPassword: "test-only-repository-password-value",
 };
+/** Leased-command context of the S3 design section 10.4 vector. */
+const sealContext = {
+  secret: "synthetic-agent-secret-0123456789abcdef",
+  commandId: "cmd-synthetic-01",
+  leaseToken: "0123456789abcdef0123456789abcdef0123456789abcdef",
+};
+const SEAL_LABEL = "pluton-agent-command-secrets-v1";
+
+/** Independent test sealer (node:crypto only); the Agent itself only opens. */
+function sealForTest(
+  plaintext: unknown,
+  context = sealContext,
+  nonce = crypto.randomBytes(12),
+) {
+  const key = Buffer.from(
+    crypto.hkdfSync(
+      "sha256",
+      Buffer.from(context.secret, "utf8"),
+      Buffer.alloc(0),
+      Buffer.from(SEAL_LABEL, "utf8"),
+      32,
+    ),
+  );
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce, {
+    authTagLength: 16,
+  });
+  cipher.setAAD(
+    Buffer.from(
+      `${SEAL_LABEL}\n${context.commandId}\n${context.leaseToken}`,
+      "utf8",
+    ),
+  );
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(plaintext), "utf8"),
+    cipher.final(),
+  ]);
+  return {
+    alg: "A256GCM",
+    kid: SEAL_LABEL,
+    nonce: nonce.toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+  };
+}
+
+/** S3 design section 10.4 sealed field, verbatim. */
+const vectorSealed = {
+  alg: "A256GCM",
+  kid: "pluton-agent-command-secrets-v1",
+  nonce: "AAECAwQFBgcICQoL",
+  ciphertext:
+    "jh0qetVE17GJz08s3DXhomumBqDIVOhzX3A4LgVFJeiH9JSKr4qR7OowvN0duifn639ReyzbjXGWiSEWAaymlLJKNnxwbrP+vLmuRdk9vI+wuUG8cJhENnxGV0LXHElNyPLQME0jaSjTfM7T0n9LTBr7V76enQuphACHq53aFDwiyFLa5p/2ML2748FcdivP43U+",
+  tag: "pUKJ+stiEzlyVi8BFN6biQ==",
+};
+
+/** S3 design section 10.2 example with the 10.4 sealed field. */
+const s3Version5Payload = {
+  version: 5,
+  backupId: "backup-01",
+  planId: "plan-01",
+  sourcePath: "/srv/example-app",
+  excludes: [] as string[],
+  repository: {
+    remoteName: "pluton",
+    path: "bucket-01/pluton/app-01",
+    initialize: true,
+  },
+  rclone: {
+    type: "s3",
+    options: {
+      provider: "Other",
+      endpoint: "https://s3.example.internal",
+      force_path_style: "true",
+      use_accept_encoding_gzip: "false",
+      no_check_bucket: "true",
+    } as Record<string, string>,
+  },
+  sealed: vectorSealed,
+};
+
+function sftpVersion5Payload(
+  sourcePath = "/srv/example-app",
+  excludes: string[] = [],
+) {
+  return {
+    version: 5,
+    backupId: "backup-01",
+    planId: "plan-01",
+    sourcePath,
+    excludes,
+    repository: {
+      remoteName: "pluton",
+      path: "managed-repositories/example",
+      initialize: true,
+    },
+    rclone: {
+      type: "sftp",
+      options: {
+        host: "sftp.example.internal",
+        port: "22",
+        user: "backup-user",
+      } as Record<string, string>,
+    },
+    sealed: sealForTest({
+      repositoryPassword: validPayload.repositoryPassword,
+      rclone: { pass: validPayload.rclone.options.pass },
+    }),
+  };
+}
 
 test("accepts the fixed BACKUP_FILESYSTEM envelope", () => {
   const parsed = parseBackupFilesystemPayload(validPayload);
@@ -100,6 +215,530 @@ test("refuses traversal, control characters, and unexpected command fields", () 
         parentLookupTimeoutMs: 0,
       }),
     /unsupported fields/,
+  );
+});
+
+test("payload v5: opens the sealed S3 vector and merges the keys into the allowlisted options", () => {
+  const parsed = parseBackupFilesystemPayload(s3Version5Payload, sealContext);
+  assert.equal(parsed.version, 5);
+  assert.equal(parsed.rclone.type, "s3");
+  assert.deepEqual(parsed.rclone.options, {
+    provider: "Other",
+    endpoint: "https://s3.example.internal",
+    force_path_style: "true",
+    use_accept_encoding_gzip: "false",
+    no_check_bucket: "true",
+    access_key_id: "SYNTHETICKEY01",
+    secret_access_key: "synthetic-secret-key-01",
+  });
+  assert.equal(parsed.repositoryPassword, "synthetic-repository-password-01");
+  assert.equal(parsed.repository.path, "bucket-01/pluton/app-01");
+});
+
+test("payload v5: the SFTP password travels sealed and is merged before obscuring", () => {
+  const parsed = parseBackupFilesystemPayload(
+    sftpVersion5Payload(),
+    sealContext,
+  );
+  assert.equal(parsed.rclone.type, "sftp");
+  assert.deepEqual(parsed.rclone.options, {
+    host: "sftp.example.internal",
+    port: "22",
+    user: "backup-user",
+    pass: validPayload.rclone.options.pass,
+  });
+  assert.equal(parsed.repositoryPassword, validPayload.repositoryPassword);
+});
+
+test("payload v5: tampered, misbound or unkeyed sealed fields refuse the command", () => {
+  for (const context of [
+    { ...sealContext, commandId: "cmd-synthetic-02" },
+    { ...sealContext, leaseToken: "f".repeat(48) },
+    { ...sealContext, secret: "synthetic-other-agent-secret" },
+  ])
+    assert.throws(
+      () => parseBackupFilesystemPayload(s3Version5Payload, context),
+      SealedSecretsError,
+    );
+  const ciphertext = Buffer.from(vectorSealed.ciphertext, "base64");
+  ciphertext[10] ^= 1;
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        {
+          ...s3Version5Payload,
+          sealed: {
+            ...vectorSealed,
+            ciphertext: ciphertext.toString("base64"),
+          },
+        },
+        sealContext,
+      ),
+    SealedSecretsError,
+  );
+  assert.throws(
+    () => parseBackupFilesystemPayload(s3Version5Payload),
+    /leased command context/,
+  );
+  const { sealed: _sealed, ...unsealed } = s3Version5Payload;
+  assert.throws(
+    () => parseBackupFilesystemPayload(unsealed, sealContext),
+    SealedSecretsError,
+  );
+});
+
+test("payload v5: plaintext credentials and a top-level repository password are refused", () => {
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        {
+          ...s3Version5Payload,
+          repositoryPassword: "synthetic-repository-password-01",
+        },
+        sealContext,
+      ),
+    /must be sealed/,
+  );
+  for (const key of ["access_key_id", "secret_access_key", "pass"])
+    assert.throws(
+      () =>
+        parseBackupFilesystemPayload(
+          {
+            ...s3Version5Payload,
+            rclone: {
+              type: "s3",
+              options: {
+                ...s3Version5Payload.rclone.options,
+                [key]: "synthetic-plaintext",
+              },
+            },
+          },
+          sealContext,
+        ),
+      /must be sealed/,
+    );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        {
+          ...sftpVersion5Payload(),
+          rclone: {
+            type: "sftp",
+            options: {
+              host: "sftp.example.internal",
+              user: "backup-user",
+              pass: "synthetic-plaintext",
+            },
+          },
+        },
+        sealContext,
+      ),
+    /must be sealed/,
+  );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        {
+          ...s3Version5Payload,
+          sealed: sealForTest({
+            repositoryPassword: "synthetic-repository-password-01",
+            rclone: { access_key_id: "SYNTHETICKEY01" },
+          }),
+        },
+        sealContext,
+      ),
+    SealedSecretsError,
+  );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        {
+          ...sftpVersion5Payload(),
+          sealed: sealForTest({
+            repositoryPassword: validPayload.repositoryPassword,
+            rclone: {
+              pass: validPayload.rclone.options.pass,
+              access_key_id: "SYNTHETICKEY01",
+            },
+          }),
+        },
+        sealContext,
+      ),
+    SealedSecretsError,
+  );
+});
+
+test("payload v5: S3 options are allowlisted and HTTPS-only with path style and no transfer compression", () => {
+  const base = s3Version5Payload.rclone.options;
+  const withOptions = (options: Record<string, string>) => ({
+    ...s3Version5Payload,
+    rclone: { type: "s3", options },
+  });
+  assert.equal(
+    parseBackupFilesystemPayload(
+      withOptions({
+        ...base,
+        region: "us-east-1",
+        location_constraint: "us-east-1",
+        acl: "private",
+      }),
+      sealContext,
+    ).rclone.options.region,
+    "us-east-1",
+  );
+  const cases: [Record<string, string>, RegExp][] = [
+    [{ ...base, env_auth: "true" }, /unsupported option/],
+    [
+      { ...base, shared_credentials_file: "/root/.aws/credentials" },
+      /unsupported option/,
+    ],
+    [{ ...base, endpoint: "http://s3.example.internal" }, /HTTPS origin/],
+    [
+      { ...base, endpoint: "https://s3.example.internal/bucket-01" },
+      /HTTPS origin/,
+    ],
+    [
+      { ...base, endpoint: "https://user:secret@s3.example.internal" },
+      /HTTPS origin/,
+    ],
+    [{ ...base, endpoint: "https://s3.example.internal:443" }, /HTTPS origin/],
+    [
+      {
+        provider: "Other",
+        endpoint: base.endpoint,
+        use_accept_encoding_gzip: "false",
+      },
+      /path-style/,
+    ],
+    [{ ...base, force_path_style: "false" }, /path-style/],
+    [{ ...base, use_accept_encoding_gzip: "true" }, /transfer compression/],
+    [
+      { provider: "Other", endpoint: base.endpoint, force_path_style: "true" },
+      /transfer compression/,
+    ],
+    [{ ...base, no_check_bucket: "yes" }, /bucket check/],
+    [{ ...base, region: "us-east-1\nexec" }, /invalid/],
+    [{ ...base, acl: "private;x" }, /invalid/],
+  ];
+  for (const [options, message] of cases)
+    assert.throws(
+      () => parseBackupFilesystemPayload(withOptions(options), sealContext),
+      message,
+      JSON.stringify(options),
+    );
+});
+
+test("payload v5: S3 repositories must be a prefix inside a bucket", () => {
+  for (const repositoryPath of [
+    "bucket-01",
+    "/bucket-01/app-01",
+    "bucket-01//app-01",
+    "bucket-01/./app-01",
+    "bucket-01/app-01/",
+    "bucket-01\\app-01",
+    "bucket-01/../app-01",
+  ])
+    assert.throws(
+      () =>
+        parseBackupFilesystemPayload(
+          {
+            ...s3Version5Payload,
+            repository: {
+              ...s3Version5Payload.repository,
+              path: repositoryPath,
+            },
+          },
+          sealContext,
+        ),
+      /prefix inside a bucket|traversal/,
+      repositoryPath,
+    );
+});
+
+test("payload v5: versions 1 to 4 stay SFTP-only and newer versions are refused", () => {
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload({
+        ...validPayload,
+        version: 4,
+        rclone: { type: "s3", options: s3Version5Payload.rclone.options },
+      }),
+    /Only SFTP storage/,
+  );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        { ...s3Version5Payload, version: 6 },
+        sealContext,
+      ),
+    /unsupported/,
+  );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        { ...s3Version5Payload, rclone: { type: "b2", options: {} } },
+        sealContext,
+      ),
+    /Storage type is unsupported/,
+  );
+});
+
+test("payload v5: accepts sourceDiagnosticsVersion as today and refuses any trust setting in the payload", () => {
+  assert.equal(
+    parseBackupFilesystemPayload(
+      { ...s3Version5Payload, sourceDiagnosticsVersion: 1 },
+      sealContext,
+    ).sourceDiagnosticsVersion,
+    1,
+  );
+  assert.equal(
+    parseBackupFilesystemPayload(
+      { ...sftpVersion5Payload(), sourceDiagnosticsVersion: 1 },
+      sealContext,
+    ).sourceDiagnosticsVersion,
+    1,
+  );
+  assert.equal(
+    parseBackupFilesystemPayload(s3Version5Payload, sealContext)
+      .sourceDiagnosticsVersion,
+    undefined,
+  );
+  assert.throws(
+    () =>
+      parseBackupFilesystemPayload(
+        { ...s3Version5Payload, sourceDiagnosticsVersion: 2 },
+        sealContext,
+      ),
+    /Source diagnostics version is unsupported/,
+  );
+  // Trust comes only from the Agent's own PLUTON_AGENT_STORAGE_CA_FILE (spec 6.1 point 2).
+  for (const key of ["ca_cert", "no_check_certificate", "SSL_CERT_FILE"])
+    assert.throws(
+      () =>
+        parseBackupFilesystemPayload(
+          {
+            ...s3Version5Payload,
+            rclone: {
+              type: "s3",
+              options: {
+                ...s3Version5Payload.rclone.options,
+                [key]: "/etc/ssl/certs/synthetic.pem",
+              },
+            },
+          },
+          sealContext,
+        ),
+      /unsupported option/,
+      key,
+    );
+  for (const field of ["trust", "storageCaFile", "caFile"])
+    assert.throws(
+      () =>
+        parseBackupFilesystemPayload(
+          { ...s3Version5Payload, [field]: "/etc/ssl/certs/synthetic.pem" },
+          sealContext,
+        ),
+      /unsupported fields/,
+      field,
+    );
+});
+
+test("payload v5: keeps the version 4 exclusion grammar and the optional lifecycle", () => {
+  assert.deepEqual(
+    parseBackupFilesystemPayload(
+      { ...s3Version5Payload, excludes: [" .cache/ ", "node_modules"] },
+      sealContext,
+    ).excludes,
+    [".cache", "node_modules"],
+  );
+  assert.throws(() =>
+    parseBackupFilesystemPayload(
+      { ...s3Version5Payload, excludes: ["../escape"] },
+      sealContext,
+    ),
+  );
+  assert.equal(
+    parseBackupFilesystemPayload(s3Version5Payload, sealContext).lifecycle,
+    undefined,
+  );
+  assert.equal(
+    parseBackupFilesystemPayload(
+      {
+        ...sftpVersion5Payload(),
+        lifecycle: {
+          version: 1,
+          preHook: { id: "prepare", args: [], timeoutSeconds: 5 },
+        },
+      },
+      sealContext,
+    ).lifecycle?.version,
+    1,
+  );
+});
+
+/** A version 2 lifecycle database entry without its password (sealed in version 5). */
+const databaseEntry = {
+  databaseId: "db_one",
+  engine: "mysql",
+  host: "127.0.0.1",
+  port: 3306,
+  tls: "local",
+  database: "example_db",
+  username: "backup_reader",
+  dumpFilename: "app.sql",
+  timeoutSeconds: 60,
+  maxDumpBytes: 4 * 1024 * 1024,
+  includeRoutines: false,
+  includeEvents: false,
+};
+
+function s3SealedWithDatabases(lifecycle: unknown) {
+  return sealForTest({
+    repositoryPassword: "synthetic-repository-password-01",
+    rclone: {
+      access_key_id: "SYNTHETICKEY01",
+      secret_access_key: "synthetic-secret-key-01",
+    },
+    lifecycle,
+  });
+}
+
+test("payload v5: database passwords are sealed per lifecycle shape and restored before use", () => {
+  const twoDatabases = {
+    version: 2,
+    databases: [
+      databaseEntry,
+      {
+        ...databaseEntry,
+        databaseId: "db_two",
+        database: "example_db2",
+        dumpFilename: "two.sql",
+      },
+    ],
+  };
+  const parsed = parseBackupFilesystemPayload(
+    {
+      ...s3Version5Payload,
+      lifecycle: twoDatabases,
+      sealed: s3SealedWithDatabases({
+        databases: {
+          db_one: "synthetic-db-password-01",
+          db_two: "synthetic-db\tpassword\n02",
+        },
+      }),
+    },
+    sealContext,
+  );
+  assert.equal(parsed.lifecycle?.version, 2);
+  assert.deepEqual(
+    parsed.lifecycle?.databases?.map((db) => [db.databaseId, db.password]),
+    [
+      ["db_one", "synthetic-db-password-01"],
+      ["db_two", "synthetic-db\tpassword\n02"],
+    ],
+  );
+  assert.ok(
+    twoDatabases.databases.every((db) => !("password" in db)),
+    "The signed payload object must not be modified.",
+  );
+  const { databaseId: _databaseId, ...singleDatabase } = databaseEntry;
+  assert.equal(
+    parseBackupFilesystemPayload(
+      {
+        ...sftpVersion5Payload(),
+        lifecycle: { version: 1, database: singleDatabase },
+        sealed: sealForTest({
+          repositoryPassword: validPayload.repositoryPassword,
+          rclone: { pass: validPayload.rclone.options.pass },
+          lifecycle: { database: "synthetic-db-password-01" },
+        }),
+      },
+      sealContext,
+    ).lifecycle?.database?.password,
+    "synthetic-db-password-01",
+  );
+  const refusals: [Record<string, unknown>, RegExp][] = [
+    [
+      {
+        ...s3Version5Payload,
+        lifecycle: {
+          version: 2,
+          databases: [{ ...databaseEntry, password: "synthetic-plaintext" }],
+        },
+        sealed: s3SealedWithDatabases({
+          databases: { db_one: "synthetic-db-password-01" },
+        }),
+      },
+      /database passwords must be sealed/,
+    ],
+    [
+      {
+        ...s3Version5Payload,
+        lifecycle: twoDatabases,
+        sealed: s3SealedWithDatabases({
+          databases: { db_one: "synthetic-db-password-01" },
+        }),
+      },
+      /no sealed password/,
+    ],
+    [{ ...s3Version5Payload, lifecycle: twoDatabases }, /no sealed password/],
+    [
+      {
+        ...s3Version5Payload,
+        lifecycle: twoDatabases,
+        sealed: s3SealedWithDatabases({ database: "synthetic-db-password-01" }),
+      },
+      /no sealed password/,
+    ],
+    [
+      {
+        ...s3Version5Payload,
+        lifecycle: twoDatabases,
+        sealed: s3SealedWithDatabases({
+          databases: {
+            db_one: "synthetic-db-password-01",
+            db_two: "synthetic-db-password-02",
+            db_three: "synthetic-db-password-03",
+          },
+        }),
+      },
+      /no matching database/,
+    ],
+    [
+      {
+        ...s3Version5Payload,
+        sealed: s3SealedWithDatabases({ database: "synthetic-db-password-01" }),
+      },
+      /no matching database/,
+    ],
+    [
+      {
+        ...s3Version5Payload,
+        lifecycle: {
+          version: 1,
+          preHook: { id: "prepare", args: [], timeoutSeconds: 5 },
+        },
+        sealed: s3SealedWithDatabases({ database: "synthetic-db-password-01" }),
+      },
+      /no matching database/,
+    ],
+  ];
+  for (const [candidate, message] of refusals)
+    assert.throws(
+      () => parseBackupFilesystemPayload(candidate, sealContext),
+      message,
+    );
+  // Versions 1 to 4 keep the plain password unchanged.
+  assert.equal(
+    parseBackupFilesystemPayload({
+      ...validPayload,
+      version: 3,
+      lifecycle: {
+        version: 2,
+        databases: [{ ...databaseEntry, password: "synthetic-db-password-01" }],
+      },
+    }).lifecycle?.databases?.[0].password,
+    "synthetic-db-password-01",
   );
 });
 
@@ -341,6 +980,64 @@ permissionTest("creates a private temporary Rclone config", async () => {
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+permissionTest(
+  "sweeps stale temporary storage configs (SIGKILL, OOM, power loss) and nothing else",
+  async () => {
+    const dataDir = await mkdtemp(
+      path.join(os.tmpdir(), "pluton-agent-sweep-"),
+    );
+    const outside = await mkdtemp(
+      path.join(os.tmpdir(), "pluton-agent-sweep-outside-"),
+    );
+    try {
+      const s3 = await writeTemporaryRcloneConfig(
+        dataDir,
+        {
+          access_key_id: "SYNTHETICKEY01",
+          endpoint: "https://s3.example.internal",
+          secret_access_key: "synthetic-secret-key-01",
+        },
+        "s3",
+      );
+      const sftp = await writeTemporaryRcloneConfig(dataDir, {
+        host: "sftp.example.internal",
+        pass: "obscured-test-password",
+        user: "backup-user",
+      });
+      await writeFile(path.join(outside, "keep.txt"), "synthetic\n");
+      await symlink(outside, path.join(dataDir, "rclone-Link01"));
+      await mkdir(path.join(dataDir, "jobs"));
+      await mkdir(path.join(dataDir, "restic-cache"));
+      await mkdir(path.join(dataDir, "rclone-not-a-temporary-dir"));
+      await writeFile(path.join(dataDir, "rclone-abc123"), "regular file\n");
+      await writeFile(path.join(dataDir, "identity.json"), "{}\n");
+      assert.equal(await sweepStaleStorageConfigs(dataDir), 2);
+      assert.ok(!existsSync(s3.directory));
+      assert.ok(!existsSync(sftp.directory));
+      assert.deepEqual((await readdir(dataDir)).sort(), [
+        "identity.json",
+        "jobs",
+        "rclone-Link01",
+        "rclone-abc123",
+        "rclone-not-a-temporary-dir",
+        "restic-cache",
+      ]);
+      assert.equal(
+        await readFile(path.join(outside, "keep.txt"), "utf8"),
+        "synthetic\n",
+      );
+      assert.equal(await sweepStaleStorageConfigs(dataDir), 0);
+      assert.equal(
+        await sweepStaleStorageConfigs(path.join(dataDir, "missing")),
+        0,
+      );
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  },
+);
 
 async function createExecutionFixture(
   listing: string,
@@ -774,3 +1471,1128 @@ for (const scenario of [
     },
   );
 }
+
+linuxExecutionTest(
+  "payload v5: follows version 3 source rules without exclusions and version 4 rules with them",
+  async () => {
+    const fixture = await createExecutionFixture("");
+    const unreadable = path.join(fixture.source, "included.txt");
+    await writeFile(unreadable, "synthetic included");
+    await chmod(unreadable, 0);
+    try {
+      const base = executionInput(fixture);
+      // Without exclusions the server would have sent version 1 to 3: no pre-backup scan.
+      await executeFilesystemBackup({
+        ...base,
+        payload: sftpVersion5Payload(fixture.source),
+        commandSeal: sealContext,
+      });
+      // With exclusions the server would have sent version 4: scan and anchored filters.
+      await assert.rejects(
+        executeFilesystemBackup({
+          ...base,
+          payload: sftpVersion5Payload(fixture.source, ["node_modules/"]),
+          commandSeal: sealContext,
+        }),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.stage === "source-validation" &&
+          error.code === "source-entry-inaccessible",
+      );
+      await chmod(unreadable, 0o600);
+      await executeFilesystemBackup({
+        ...base,
+        payload: sftpVersion5Payload(fixture.source, ["*.sql"]),
+        commandSeal: sealContext,
+      });
+      const backups = (
+        await readCalls(path.join(fixture.dataDir, "restic-calls"))
+      ).filter((args) => args.includes("backup"));
+      assert.equal(backups.length, 2);
+      assert.ok(!backups[0].some((arg) => arg.includes("**/")));
+      assert.ok(backups[1].includes(`${fixture.source}/**/*.sql`));
+    } finally {
+      await chmod(unreadable, 0o600);
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+/**
+ * Fake Rclone/Restic for S3 version 5 runs. The first `lsf` is the S3 access
+ * check (Task 7), any later `lsf` the empty-target check. Each call records its
+ * arguments and SSL_CERT_FILE; the config is copied for inspection.
+ */
+async function createS3ExecutionFixture(
+  options: {
+    accessExit?: number;
+    targetListing?: string;
+    targetExit?: number;
+    lsfDiagnostics?: string;
+    backupExit?: number;
+    backupDiagnostics?: string;
+    /** After its stderr, `restic backup` hangs with no new output until killed by this signal. */
+    backupSignal?: NodeJS.Signals;
+  } = {},
+) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pluton-agent-s3-"));
+  const source = path.join(root, "source");
+  const dataDir = path.join(root, "state");
+  const binDir = path.join(root, "bin");
+  await Promise.all([mkdir(source), mkdir(dataDir), mkdir(binDir)]);
+  await writeFile(path.join(source, "app.txt"), "synthetic source\n");
+  await writeFile(
+    path.join(binDir, "rclone"),
+    `#!/usr/bin/env node
+import { appendFileSync, copyFileSync, existsSync, writeFileSync } from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+const config = process.env.RCLONE_CONFIG || "";
+if (!config) {
+  process.exitCode = 97;
+} else {
+  const state = path.dirname(path.dirname(config));
+  appendFileSync(path.join(state, "rclone.calls"), JSON.stringify(args) + "\\n");
+  appendFileSync(path.join(state, "rclone.env"), JSON.stringify({ SSL_CERT_FILE: process.env.SSL_CERT_FILE ?? null }) + "\\n");
+  if (args[0] === "lsf") {
+    copyFileSync(config, path.join(state, "rclone.config-copy"));
+    const access = !existsSync(path.join(state, "access-checked"));
+    writeFileSync(path.join(state, "access-checked"), "1");
+    process.stderr.write(${JSON.stringify(options.lsfDiagnostics ?? "")});
+    if (access) process.exitCode = ${options.accessExit ?? 0};
+    else {
+      process.stdout.write(${JSON.stringify(options.targetListing ?? "")});
+      process.exitCode = ${options.targetExit ?? 0};
+    }
+  }
+}
+`,
+  );
+  await writeFile(
+    path.join(binDir, "restic"),
+    `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+const state = path.dirname(path.dirname(process.env.RCLONE_CONFIG || ""));
+appendFileSync(path.join(state, "restic-calls"), JSON.stringify(args) + "\\n");
+appendFileSync(path.join(state, "restic.env"), JSON.stringify({ SSL_CERT_FILE: process.env.SSL_CERT_FILE ?? null, passwordOpened: process.env.RESTIC_PASSWORD === "synthetic-repository-password-01" }) + "\\n");
+if (args.includes("cat") && args.includes("config")) console.log(JSON.stringify({ version: 2, id: "c".repeat(64) }));
+else if (args.includes("snapshots")) process.exitCode = 10;
+else if (args.includes("backup")) {
+  process.stderr.write(${JSON.stringify((options.backupDiagnostics ?? "").replaceAll("@SOURCE@", source))});
+  if (${JSON.stringify(options.backupSignal ?? "")}) setTimeout(() => process.kill(process.pid, ${JSON.stringify(options.backupSignal ?? "")}), 200);
+  else if (${options.backupExit ?? 0} !== 0) process.exitCode = ${options.backupExit ?? 0};
+  else process.stdout.write(JSON.stringify({ message_type: "summary", snapshot_id: "abcdef0123456789", files_new: 0, files_changed: 0, files_unmodified: 0, dirs_new: 0, dirs_changed: 0, dirs_unmodified: 0, data_blobs: 0, tree_blobs: 0, data_added: 0, data_added_packed: 0, total_files_processed: 0, total_bytes_processed: 0, total_duration: 0 }) + "\\n");
+}
+`,
+  );
+  await Promise.all([
+    chmod(path.join(binDir, "rclone"), 0o755),
+    chmod(path.join(binDir, "restic"), 0o755),
+  ]);
+  return { root, source, dataDir, binDir };
+}
+
+function s3ExecutionInput(
+  fixture: Awaited<ReturnType<typeof createS3ExecutionFixture>>,
+  payload: Record<string, unknown> = {
+    ...s3Version5Payload,
+    sourcePath: fixture.source,
+  },
+  config: Partial<AgentConfig> = {},
+) {
+  return {
+    payload,
+    commandSeal: sealContext,
+    config: {
+      serverUrl: new URL("https://example.invalid"),
+      dataDir: fixture.dataDir,
+      allowedRoots: [fixture.source],
+      binDir: fixture.binDir,
+      allowInsecureHttp: false,
+      ...config,
+    },
+    allowedRoots: [fixture.source],
+    shouldCancel: async () => false,
+    onEvent: async () => undefined,
+  };
+}
+
+async function readJsonLines<T>(file: string): Promise<T[]> {
+  return (await readFile(file, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as T);
+}
+
+linuxExecutionTest(
+  "S3: writes a private type = s3 config with the plain sealed keys, never obscures, and backs up to the bucket prefix",
+  async () => {
+    const fixture = await createS3ExecutionFixture();
+    const stages: string[] = [];
+    try {
+      const result = await executeFilesystemBackup({
+        ...s3ExecutionInput(fixture),
+        onStage: (event) => stages.push(`${event.stage}:${event.message}`),
+      });
+      assert.equal(result.snapshotId, "abcdef0123456789");
+      const rcloneCalls = await readCalls(
+        path.join(fixture.dataDir, "rclone.calls"),
+      );
+      assert.ok(!rcloneCalls.some((args) => args[0] === "obscure"));
+      assert.ok(
+        rcloneCalls.some(
+          (args) =>
+            args[0] === "lsf" && args[1] === "pluton:bucket-01/pluton/app-01",
+        ),
+      );
+      assert.ok(
+        !stages.some((stage) => stage.startsWith("sftp-password-obscure:")),
+      );
+      assert.ok(
+        stages.includes(
+          "temporary-storage-config:temporary storage config created",
+        ),
+      );
+      const config = (
+        await readFile(path.join(fixture.dataDir, "rclone.config-copy"), "utf8")
+      ).split("\n");
+      assert.deepEqual(config.slice(0, 3), [
+        "[pluton]",
+        "type = s3",
+        "env_auth = false",
+      ]);
+      for (const line of [
+        "access_key_id = SYNTHETICKEY01",
+        "secret_access_key = synthetic-secret-key-01",
+        "endpoint = https://s3.example.internal",
+        "provider = Other",
+        "force_path_style = true",
+        "use_accept_encoding_gzip = false",
+        "no_check_bucket = true",
+      ])
+        assert.ok(config.includes(line), line);
+      const resticCalls = await readCalls(
+        path.join(fixture.dataDir, "restic-calls"),
+      );
+      for (const command of ["init", "backup"])
+        assert.ok(
+          resticCalls.some(
+            (args) =>
+              args.includes(command) &&
+              args[1] === "rclone:pluton:bucket-01/pluton/app-01",
+          ),
+          command,
+        );
+      assert.ok(
+        (
+          await readJsonLines<{ passwordOpened: boolean }>(
+            path.join(fixture.dataDir, "restic.env"),
+          )
+        ).every((entry) => entry.passwordOpened),
+      );
+      assert.ok(!JSON.stringify(stages).includes("synthetic-secret-key-01"));
+      assert.deepEqual(
+        (await readdir(fixture.dataDir)).filter((name) =>
+          name.startsWith("rclone-"),
+        ),
+        [],
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+permissionTest(
+  "S3: the temporary Rclone config is private and pins env_auth off",
+  async () => {
+    const dataDir = await mkdtemp(
+      path.join(os.tmpdir(), "pluton-agent-s3-config-"),
+    );
+    try {
+      const temporary = await writeTemporaryRcloneConfig(
+        dataDir,
+        {
+          endpoint: "https://s3.example.internal",
+          access_key_id: "SYNTHETICKEY01",
+          secret_access_key: "synthetic-secret-key-01",
+          force_path_style: "true",
+          use_accept_encoding_gzip: "false",
+        },
+        "s3",
+      );
+      assert.equal((await stat(temporary.directory)).mode & 0o777, 0o700);
+      assert.equal((await stat(temporary.configPath)).mode & 0o777, 0o600);
+      assert.equal(
+        await readFile(temporary.configPath, "utf8"),
+        "[pluton]\ntype = s3\nenv_auth = false\naccess_key_id = SYNTHETICKEY01\nendpoint = https://s3.example.internal\nforce_path_style = true\nsecret_access_key = synthetic-secret-key-01\nuse_accept_encoding_gzip = false\n",
+      );
+      await assert.rejects(
+        writeTemporaryRcloneConfig(
+          dataDir,
+          { endpoint: "https://s3.example.internal\n[other]" },
+          "s3",
+        ),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message === "Storage configuration contains an unsafe value.",
+      );
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  },
+);
+
+/** Root-owned, readable PEM bundle present in the Ubuntu validation image (ca-certificates). */
+const rootOwnedCaBundle = "/etc/ssl/certs/ca-certificates.crt";
+
+linuxExecutionTest(
+  "S3: PLUTON_AGENT_STORAGE_CA_FILE reaches Restic and Rclone as SSL_CERT_FILE",
+  async () => {
+    assert.ok(
+      existsSync(rootOwnedCaBundle),
+      "The Ubuntu validation image provides a root-owned CA bundle.",
+    );
+    for (const storageCaFile of [rootOwnedCaBundle, undefined]) {
+      const fixture = await createS3ExecutionFixture();
+      try {
+        await executeFilesystemBackup(
+          s3ExecutionInput(
+            fixture,
+            undefined,
+            storageCaFile ? { storageCaFile } : {},
+          ),
+        );
+        for (const file of ["rclone.env", "restic.env"])
+          assert.ok(
+            (
+              await readJsonLines<{ SSL_CERT_FILE: string | null }>(
+                path.join(fixture.dataDir, file),
+              )
+            ).every((entry) => entry.SSL_CERT_FILE === (storageCaFile ?? null)),
+            `${file} ${storageCaFile ?? "without CA"}`,
+          );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    }
+  },
+);
+
+linuxExecutionTest(
+  "S3: a storage CA that is not root-owned refuses the backup before any storage tool runs",
+  async () => {
+    const fixture = await createS3ExecutionFixture();
+    const unowned = path.join(fixture.root, "storage-ca.pem");
+    await writeFile(unowned, "synthetic CA\n", { mode: 0o644 });
+    try {
+      await assert.rejects(
+        executeFilesystemBackup(
+          s3ExecutionInput(fixture, undefined, { storageCaFile: unowned }),
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof BackupFilesystemError);
+          assert.equal(error.stage, "temporary-storage-config");
+          assert.equal(error.code, "temporary-config-failed");
+          return true;
+        },
+      );
+      assert.ok(!existsSync(path.join(fixture.dataDir, "rclone.calls")));
+      assert.ok(!existsSync(path.join(fixture.dataDir, "restic-calls")));
+      assert.deepEqual(
+        (await readdir(fixture.dataDir)).filter((name) =>
+          name.startsWith("rclone-"),
+        ),
+        [],
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+linuxExecutionTest(
+  "S3: an SFTP backup ignores the storage CA setting",
+  async () => {
+    const fixture = await createExecutionFixture("");
+    try {
+      const input = executionInput(fixture);
+      const result = await executeFilesystemBackup({
+        ...input,
+        config: {
+          ...input.config,
+          storageCaFile: path.join(fixture.root, "absent-storage-ca.pem"),
+        },
+      });
+      assert.equal(result.snapshotId, "abcdef0123456789");
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+for (const scenario of [
+  {
+    name: "an unknown access key",
+    diagnostics:
+      "operation error S3: ListObjectsV2, https response error StatusCode: 403, RequestID: 1, HostID: 2, api error InvalidAccessKeyId: The access key ID you provided does not exist in our records.",
+    code: "target-check-auth-failed",
+  },
+  {
+    name: "a wrong secret key",
+    diagnostics:
+      "operation error S3: ListObjectsV2, https response error StatusCode: 403, RequestID: 1, HostID: 2, api error SignatureDoesNotMatch: The request signature we calculated does not match the signature you provided.",
+    code: "target-check-auth-failed",
+  },
+  {
+    name: "a refused bucket",
+    diagnostics:
+      "operation error S3: ListObjectsV2, https response error StatusCode: 403, RequestID: 1, HostID: 2, api error AccessDenied: Access Denied",
+    code: "target-check-access-failed",
+  },
+  {
+    name: "an untrusted certificate",
+    diagnostics:
+      'Get "https://s3.example.internal/bucket-01?delimiter=%2F": tls: failed to verify certificate: x509: certificate signed by unknown authority',
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a DNS server failure",
+    diagnostics:
+      "lookup s3.example.internal on 192.0.2.53:53: server misbehaving",
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a throttled endpoint",
+    diagnostics:
+      "operation error S3: ListObjectsV2, https response error StatusCode: 503, RequestID: 1, HostID: 2, api error SlowDown: Please reduce your request rate.",
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "an unrecognised provider failure",
+    diagnostics: "synthetic unrecognised provider failure",
+    code: "repository-check-failed",
+  },
+])
+  linuxExecutionTest(
+    `S3: the access check maps ${scenario.name} to ${scenario.code} before Restic runs`,
+    async () => {
+      const providerSecret = "synthetic-provider-secret-marker";
+      const fixture = await createS3ExecutionFixture({
+        accessExit: 1,
+        lsfDiagnostics: `${scenario.diagnostics} ${providerSecret}\n`,
+      });
+      const stages: import("./backupFilesystem.js").BackupFilesystemStageEvent[] =
+        [];
+      try {
+        await assert.rejects(
+          executeFilesystemBackup({
+            ...s3ExecutionInput(fixture),
+            onStage: (event) => stages.push(event),
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof BackupFilesystemError);
+            assert.equal(error.stage, "repository-check");
+            assert.equal(error.code, scenario.code);
+            assert.ok(!JSON.stringify(error).includes(providerSecret));
+            return true;
+          },
+        );
+        assert.equal(
+          (await readCalls(path.join(fixture.dataDir, "rclone.calls"))).filter(
+            (args) => args[0] === "lsf",
+          ).length,
+          1,
+          "One access check, no retry loop",
+        );
+        assert.ok(
+          !existsSync(path.join(fixture.dataDir, "restic-calls")),
+          "Restic must not run after a failed S3 access check.",
+        );
+        assert.ok(
+          stages.some((event) => event.message === "real repository failure"),
+        );
+        for (const forbidden of [providerSecret, "synthetic-secret-key-01"])
+          assert.ok(!JSON.stringify(stages).includes(forbidden));
+        assert.deepEqual(
+          (await readdir(fixture.dataDir)).filter((name) =>
+            name.startsWith("rclone-"),
+          ),
+          [],
+        );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+linuxExecutionTest(
+  "S3: a missing bucket (rclone exit 3) is a repository failure, never an empty target",
+  async () => {
+    const fixture = await createS3ExecutionFixture({
+      accessExit: 3,
+      lsfDiagnostics: "directory not found\n",
+    });
+    try {
+      await assert.rejects(
+        executeFilesystemBackup(s3ExecutionInput(fixture)),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.stage === "repository-check" &&
+          error.code === "repository-check-failed",
+      );
+      assert.ok(!existsSync(path.join(fixture.dataDir, "restic-calls")));
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+linuxExecutionTest(
+  "S3: objects under the prefix refuse initialization; an empty listing initializes",
+  async () => {
+    const occupied = await createS3ExecutionFixture({
+      targetListing: "config\n",
+    });
+    try {
+      await assert.rejects(
+        executeFilesystemBackup(s3ExecutionInput(occupied)),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.stage === "repository-target-check" &&
+          error.code === "repository-target-not-empty",
+      );
+      assert.ok(
+        !(await readCalls(path.join(occupied.dataDir, "restic-calls"))).some(
+          (args) => args.includes("init") || args.includes("backup"),
+        ),
+      );
+    } finally {
+      await rm(occupied.root, { recursive: true, force: true });
+    }
+    const missingBucket = await createS3ExecutionFixture({ targetExit: 3 });
+    try {
+      await assert.rejects(
+        executeFilesystemBackup(s3ExecutionInput(missingBucket)),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.stage === "repository-target-check" &&
+          error.code === "repository-target-check-failed",
+      );
+      assert.ok(
+        !(
+          await readCalls(path.join(missingBucket.dataDir, "restic-calls"))
+        ).some((args) => args.includes("init")),
+      );
+    } finally {
+      await rm(missingBucket.root, { recursive: true, force: true });
+    }
+    const empty = await createS3ExecutionFixture();
+    const stages: string[] = [];
+    try {
+      await executeFilesystemBackup({
+        ...s3ExecutionInput(empty),
+        onStage: (event) => stages.push(`${event.stage}:${event.message}`),
+      });
+      assert.ok(
+        stages.includes("repository-check:storage access check started"),
+      );
+      assert.ok(stages.includes("repository-check:storage access verified"));
+      assert.ok(stages.includes("repository-target-check:target-empty"));
+      assert.ok(!stages.includes("repository-target-check:target-not-found"));
+      assert.equal(
+        (await readCalls(path.join(empty.dataDir, "rclone.calls"))).filter(
+          (args) => args[0] === "lsf",
+        ).length,
+        2,
+      );
+    } finally {
+      await rm(empty.root, { recursive: true, force: true });
+    }
+  },
+);
+
+/**
+ * The captured decisive end of a real storage failure (docs/S3_REPOSITORY.md):
+ * Restic's give-up line and its final backend error. Storage lines decide the
+ * category only when the run ended this way; the same lines alone (a retry
+ * Restic recovered from) never make a storage failure.
+ */
+const RESTIC_STORAGE_GAVE_UP =
+  [
+    "Save(<data/0123456789>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+    '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: unexpected HTTP response (500): 500 Internal Server Error"}',
+  ].join("\n") + "\n";
+
+for (const scenario of [
+  {
+    name: "a refused upload",
+    diagnostics:
+      "rclone: operation error S3: PutObject, https response error StatusCode: 403, RequestID: 1, HostID: 2, api error AccessDenied: Access Denied\nFatal: unable to save snapshot: synthetic\n",
+    code: "target-check-access-failed",
+  },
+  {
+    name: "a rejected key",
+    diagnostics:
+      "rclone: operation error S3: PutObject, https response error StatusCode: 403, RequestID: 1, HostID: 2, api error SignatureDoesNotMatch: The request signature we calculated does not match the signature you provided.\n",
+    code: "target-check-auth-failed",
+  },
+  {
+    name: "a provider error",
+    diagnostics:
+      "rclone: operation error S3: PutObject, https response error StatusCode: 500, RequestID: 1, HostID: 2, api error InternalError: We encountered an internal error.\n",
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "an unclassified failure",
+    diagnostics: "Fatal: unable to save snapshot: synthetic\n",
+    code: "restic-backup-failed",
+  },
+])
+  linuxExecutionTest(
+    `S3: a Restic backup failure from ${scenario.name} becomes ${scenario.code} once Restic gave up, restic-backup-failed before`,
+    async () => {
+      for (const [diagnostics, code] of [
+        [scenario.diagnostics + RESTIC_STORAGE_GAVE_UP, scenario.code],
+        [scenario.diagnostics, "restic-backup-failed"],
+      ]) {
+        const fixture = await createS3ExecutionFixture({
+          backupExit: 1,
+          backupDiagnostics: diagnostics,
+        });
+        try {
+          await assert.rejects(
+            executeFilesystemBackup(s3ExecutionInput(fixture)),
+            (error: unknown) => {
+              assert.ok(error instanceof BackupFilesystemError);
+              assert.equal(error.stage, "restic-backup");
+              assert.equal(error.code, code);
+              assert.ok(!JSON.stringify(error).includes("RequestID"));
+              return true;
+            },
+          );
+        } finally {
+          await rm(fixture.root, { recursive: true, force: true });
+        }
+      }
+    },
+  );
+
+const SYNTHETIC_SOURCE_READ_ERRORS = [
+  "error: /srv/example-app/a.txt: read /srv/example-app/a.txt: i/o timeout",
+  "error: /srv/example-app/b.txt: open /srv/example-app/b.txt: connection timed out",
+  "error: /srv/example-app/c.txt: read /srv/example-app/c.txt: broken pipe",
+  "error: /srv/example-app/d.txt: unexpected EOF",
+  "error: /srv/example-app/AccessDenied-status code: 403.txt: lstat /srv/example-app/AccessDenied-status code: 403.txt: input/output error",
+  "open /srv/example-app/e.txt: connection reset by peer",
+  "Lstat /srv/example-app/f.txt: no route to host",
+  "cannot read /srv/example-app/g.txt: i/o timeout",
+].join("\n");
+
+for (const scenario of [
+  {
+    name: "only source read errors",
+    diagnostics: `${SYNTHETIC_SOURCE_READ_ERRORS}\nWarning: at least one source file could not be read\n`,
+    code: "restic-backup-failed",
+  },
+  {
+    name: "a source file named like an access error",
+    diagnostics:
+      "error: /srv/example-app/AccessDenied-status code: 403.txt: read /srv/example-app/AccessDenied-status code: 403.txt: EOF\n",
+    code: "restic-backup-failed",
+  },
+  {
+    name: "a relative artifact path with storage-looking text",
+    diagnostics:
+      "error: dump/s3.backup.sql: read dump/s3.backup.sql: i/o timeout\nerror: dump/HTTP-api error.sql: read dump/HTTP-api error.sql: connection timed out\nerror: dump/api error AccessDenied.sql: EOF\n",
+    code: "restic-backup-failed",
+  },
+  {
+    name: "an rclone line that also says cannot read",
+    diagnostics: "rclone: Failed to copy: cannot read response: i/o timeout\n",
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "broad markers without backend context",
+    diagnostics: "warning: s3.example.internal HTTP api error i/o timeout\n",
+    code: "restic-backup-failed",
+  },
+  {
+    name: "a Rclone transport line",
+    diagnostics:
+      'rclone: Failed to copy: Put "https://s3.example.internal/bucket-01/data": read tcp 192.0.2.10:1->192.0.2.11:443: i/o timeout\n',
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a Restic backend Save line",
+    diagnostics:
+      "Save(<data/0123456789>) returned error, retrying after 1s: i/o timeout\n",
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a backend signature line",
+    diagnostics:
+      "Load(<data/0123456789>, 0, 0) returned error: api error SignatureDoesNotMatch: The request signature we calculated does not match.\n",
+    code: "target-check-auth-failed",
+  },
+  {
+    name: "a backend AccessDenied line",
+    diagnostics:
+      "Fatal: unable to open repository: api error AccessDenied: Access Denied\n",
+    code: "target-check-access-failed",
+  },
+  {
+    name: "source errors mixed with one backend transport line",
+    diagnostics: `${SYNTHETIC_SOURCE_READ_ERRORS}\nrclone: Failed to copy: connection timed out\n`,
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a source file named like an auth error next to a backend timeout",
+    diagnostics:
+      "error: /srv/example-app/SignatureDoesNotMatch.txt: read /srv/example-app/SignatureDoesNotMatch.txt: EOF\nSave(<data/0123456789>) returned error: i/o timeout\n",
+    code: "target-check-transport-failed",
+  },
+])
+  linuxExecutionTest(
+    `S3: backup stderr with ${scenario.name} reports ${scenario.code} once Restic gave up, restic-backup-failed before`,
+    async () => {
+      for (const [diagnostics, code] of [
+        [scenario.diagnostics + RESTIC_STORAGE_GAVE_UP, scenario.code],
+        [scenario.diagnostics, "restic-backup-failed"],
+      ]) {
+        const fixture = await createS3ExecutionFixture({
+          backupExit: 1,
+          backupDiagnostics: diagnostics,
+        });
+        const stages: string[] = [];
+        try {
+          await assert.rejects(
+            executeFilesystemBackup({
+              ...s3ExecutionInput(fixture),
+              onStage: (event) =>
+                stages.push(`${event.stage}:${event.message}`),
+            }),
+            (error: unknown) => {
+              assert.ok(error instanceof BackupFilesystemError);
+              assert.equal(error.stage, "restic-backup");
+              assert.equal(error.code, code);
+              const text = JSON.stringify([error, stages]);
+              for (const leaked of [
+                "/srv/example-app",
+                "example.internal",
+                "192.0.2.",
+                "bucket-01",
+                "0123456789",
+                "AccessDenied-status",
+              ])
+                assert.ok(!text.includes(leaked), leaked);
+              return true;
+            },
+          );
+        } finally {
+          await rm(fixture.root, { recursive: true, force: true });
+        }
+      }
+    },
+  );
+
+/**
+ * Real `restic backup --json` stderr shapes (Restic 0.19.1 through its Rclone
+ * backend, Rclone 1.75.1 `serve s3` over HTTPS), captured in the Ubuntu
+ * validation image (docs/S3_REPOSITORY.md). Paths, object names, hosts and
+ * buckets are replaced by synthetic values; `@SOURCE@` is the fixture source.
+ * The ESTALE line reuses the captured EIO shape with Go's ESTALE text.
+ */
+const CAPTURED = {
+  sourcePermissionDenied: [
+    '{"message_type":"error","error":{"message":"openfile for readdirnames failed: open @SOURCE@/app/locked-dir: permission denied"},"during":"scan","item":"@SOURCE@/app/locked-dir"}',
+    '{"message_type":"error","error":{"message":"open @SOURCE@/app/unreadable.txt: permission denied"},"during":"archival","item":"@SOURCE@/app/unreadable.txt"}',
+  ],
+  sourceReadFailures: [
+    '{"message_type":"error","error":{"message":"failed to save @SOURCE@/nfs/report.dat: read @SOURCE@/nfs/report.dat: input/output error"},"during":"archival","item":"@SOURCE@/nfs/report.dat"}',
+    '{"message_type":"error","error":{"message":"failed to save @SOURCE@/nfs/ledger.dat: read @SOURCE@/nfs/ledger.dat: stale NFS file handle"},"during":"archival","item":"@SOURCE@/nfs/ledger.dat"}',
+  ],
+  partialExit:
+    '{"message_type":"exit_error","code":3,"message":"Warning: at least one source file could not be read"}',
+  uploadRetried503: [
+    "rclone: 2026/11/15 17:03:07 ERROR : data/01/0123456789abcdef: Post request put error: operation error S3: PutObject, exceeded maximum number of attempts, 1, https response error StatusCode: 503, RequestID: 1, HostID: , api error ServiceUnavailable: Service Unavailable",
+    "rclone: 2026/11/15 17:03:07 ERROR : data/01/0123456789abcdef: Post request rcat error: operation error S3: PutObject, exceeded maximum number of attempts, 1, https response error StatusCode: 503, RequestID: 1, HostID: , api error ServiceUnavailable: Service Unavailable",
+    "Save(<data/0123456789>) returned error, retrying after 1.207734412s: unexpected HTTP response (500): 500 Internal Server Error",
+  ],
+  uploadRetried403: [
+    "rclone: 2026/11/15 17:03:06 ERROR : data/01/0123456789abcdef: Post request put error: operation error S3: PutObject, https response error StatusCode: 403, RequestID: 1, HostID: , api error AccessDenied: Access Denied",
+    "rclone: 2026/11/15 17:03:06 ERROR : data/01/0123456789abcdef: Post request rcat error: operation error S3: PutObject, https response error StatusCode: 403, RequestID: 1, HostID: , api error AccessDenied: Access Denied",
+    "Save(<data/0123456789>) returned error, retrying after 904.774335ms: unexpected HTTP response (500): 500 Internal Server Error",
+  ],
+  uploadRefused: [
+    'rclone: 2026/11/15 17:16:34 ERROR : data/01/0123456789abcdef: Post request put error: operation error S3: PutObject, exceeded maximum number of attempts, 1, https response error StatusCode: 0, RequestID: , HostID: , request send failed, Put "https://s3.example.internal/bucket-01/managed/app-01/data/01/0123456789abcdef?x-id=PutObject": dial tcp 192.0.2.10:443: connect: connection refused',
+    'rclone: 2026/11/15 17:16:34 ERROR : data/01/0123456789abcdef: Post request rcat error: operation error S3: PutObject, exceeded maximum number of attempts, 1, https response error StatusCode: 0, RequestID: , HostID: , request send failed, Put "https://s3.example.internal/bucket-01/managed/app-01/data/01/0123456789abcdef?x-id=PutObject": dial tcp 192.0.2.10:443: connect: connection refused',
+    "Save(<data/0123456789>) returned error, retrying after 51.37068246s: unexpected HTTP response (500): 500 Internal Server Error",
+  ],
+  uploadGaveUp:
+    "Save(<data/0123456789>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+  // After the pack upload gave up: lock refresh, unlock retries, then the final error.
+  unlockRefused: [
+    "Save(<lock/0123456789>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+    "unable to refresh lock: unexpected HTTP response (500): 500 Internal Server Error",
+    "Remove(<lock/0123456789>) returned error, retrying after 1.361621548s: unexpected HTTP response (500): 500 Internal Server Error",
+    'rclone: 2026/11/15 17:23:05 ERROR : locks/0123456789abcdef: Delete request remove error: operation error S3: DeleteObject, https response error StatusCode: 0, RequestID: , HostID: , request send failed, Delete "https://s3.example.internal/bucket-01/managed/app-01/locks/0123456789abcdef?x-id=DeleteObject": dial tcp 192.0.2.10:443: connect: connection refused',
+    "rclone: failed to get rate limit token, retry quota exceeded, 0 available, 5 requested",
+    "Remove(<lock/0123456789>) returned error, retrying after 1m27.374364306s: unexpected HTTP response (500): 500 Internal Server Error",
+    "error while unlocking: context canceled",
+  ],
+  unlockDenied: [
+    "Save(<lock/0123456789>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+    "unable to refresh lock: unexpected HTTP response (500): 500 Internal Server Error",
+    "rclone: 2026/11/15 17:23:04 ERROR : locks/0123456789abcdef: Delete request remove error: operation error S3: DeleteObject, https response error StatusCode: 403, RequestID: 1, HostID: , api error AccessDenied: Access Denied",
+    "Remove(<lock/0123456789>) returned error, retrying after 1m18.23016133s: unexpected HTTP response (500): 500 Internal Server Error",
+    "error while unlocking: context canceled",
+  ],
+  repositoryOpenTimedOut:
+    '{"message_type":"exit_error","code":1,"message":"Fatal: unable to open repository at rclone:pluton:bucket-01/managed/app-01: error talking HTTP to rclone: Get \\"http://localhost/file-0123456789\\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"}',
+  wrongKey: [
+    "Stat(<config/>) returned error, retrying after 904.774335ms: unexpected HTTP response (500): 500 Internal Server Error",
+    "Stat(<config/>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+    '{"message_type":"exit_error","code":1,"message":"Fatal: unable to open config file: unexpected HTTP response (500): 500 Internal Server Error\\nrclone:pluton:bucket-01/managed/app-01"}',
+  ],
+};
+const STORAGE_GAVE_UP_EXIT =
+  '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: unexpected HTTP response (500): 500 Internal Server Error"}';
+const lines = (...parts: (string | string[])[]) =>
+  `${parts.flat().join("\n")}\n`;
+/**
+ * Restic's retry backend after a retried call succeeded, `"%v operation successful
+ * after %d retries"` (internal/global/global.go in Restic 0.19.1; not captured).
+ */
+const RECOVERED_UPLOAD = [
+  ...CAPTURED.uploadRetried503,
+  "Save(<data/0123456789>) operation successful after 1 retries",
+];
+
+type CapturedScenario = {
+  name: string;
+  exit: number;
+  /** Killed by this signal after a hang with no new output (exit status null). */
+  signal?: NodeJS.Signals;
+  diagnostics: string;
+  code: string;
+};
+
+for (const scenario of <CapturedScenario[]>[
+  {
+    // The Agent's own deadline is a separate branch that never classifies; with no
+    // database job an S3 backup has no deadline, so this pins the external-signal path.
+    name: "a hang with no new output (NFS hard mount) ended by an external SIGTERM after a recovered 503 retry and NFS read errors",
+    exit: 0,
+    signal: "SIGTERM",
+    diagnostics: lines(RECOVERED_UPLOAD, CAPTURED.sourceReadFailures),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "a SIGKILL (OOM) after a recovered 503 retry",
+    exit: 0,
+    signal: "SIGKILL",
+    diagnostics: lines(RECOVERED_UPLOAD),
+    code: "restic-backup-failed",
+  },
+  {
+    // Restic 0.19.1 main.go: context.Canceled exits 130; the message is synthetic.
+    name: "exit 130 (service stop) with recovered Rclone 403 and 503 lines in the tail",
+    exit: 130,
+    diagnostics: lines(
+      CAPTURED.uploadRetried403,
+      RECOVERED_UPLOAD,
+      '{"message_type":"exit_error","code":130,"message":"context canceled"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "exit 130 with recovered retries and permission-denied source errors",
+    exit: 130,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      CAPTURED.sourcePermissionDenied,
+      '{"message_type":"exit_error","code":130,"message":"context canceled"}',
+    ),
+    code: "source-entry-inaccessible",
+  },
+  {
+    // Exit 2 is a Go runtime crash; the crash text is synthetic.
+    name: "exit 2 (Go runtime crash) after recovered retries",
+    exit: 2,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      CAPTURED.uploadRefused,
+      "fatal error: runtime: out of memory",
+      "goroutine 1 [running]:",
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // ErrNoSourceData in Restic 0.19.1 cmd/restic/cmd_backup.go.
+    name: "exit 1 with no source data left after recovered retries",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      '{"message_type":"exit_error","code":1,"message":"Fatal: all source directories/files do not exist"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // `unable to save snapshot: %v` is Restic's wrapper; the local cause is synthetic.
+    name: "exit 1 with a local temporary-file failure after recovered retries",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: write /tmp/restic-temp-pack-0123456789: no space left on device"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "exit 1 with a local fatal error after a recovered retry and JSON source errors that look like storage",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      '{"message_type":"error","error":{"message":"read @SOURCE@/nfs/Price List(2024).xlsx: connection timed out"},"during":"archival","item":"@SOURCE@/nfs/Price List(2024).xlsx"}',
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: synthetic local failure"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // Restic 0.19.1 main.go: IsAlreadyLocked exits 11 (another lock, not storage).
+    name: "exit 11 (repository already locked) after recovered retries",
+    exit: 11,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      '{"message_type":"exit_error","code":11,"message":"repository is already locked exclusively by PID 4242 on app-01\\nthe `unlock` command can be used to remove stale locks"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // Rclone child killed alone (OOM): the bridge's permanent error (Restic 0.19.1
+    // internal/backend/rclone/backend.go) in a give-up line; the lines are synthetic.
+    name: "exit 1 whose only give-up line is the closed Rclone stdio connection, after a recovered 503 retry",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      "Save(<data/0123456789>) returned error, retrying after 1.2s: unexpected EOF",
+      "Save(<data/0123456789>) failed: rclone stdio connection already closed",
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: rclone stdio connection already closed"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // A not-exist answer (a lock removed by another client) is permanent in Restic's
+    // REST backend and gives up at once; it is no evidence of an outage.
+    name: "exit 1 whose only give-up line is an HTTP 404, after a recovered 503 retry and a local fatal error",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      "Load(<lock/0123456789>, 0, 0) failed: unexpected HTTP response (404): 404 Not Found",
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: write /tmp/restic-temp-pack-0123456789: no space left on device"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "exit 1 whose only give-up line is an HTTP 416, after a recovered 503 retry and a local fatal error",
+    exit: 1,
+    diagnostics: lines(
+      RECOVERED_UPLOAD,
+      "Load(<data/0123456789>, 4096, 0) failed: unexpected HTTP response (416): 416 Requested Range Not Satisfiable",
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: synthetic local failure"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    // A lost lock as the first visible symptom: the give-up line alone opens the gate.
+    name: "exit 1 whose only gate evidence is a lock give-up with HTTP 500 and a refused endpoint",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.unlockRefused.slice(3, 4),
+      "Save(<lock/0123456789>) failed: unexpected HTTP response (500): 500 Internal Server Error",
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: context canceled"}',
+    ),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "exit 3 with a recovered Rclone upload error and NFS EIO/ESTALE read errors",
+    exit: 3,
+    diagnostics: lines(
+      CAPTURED.uploadRetried503,
+      CAPTURED.sourceReadFailures,
+      CAPTURED.partialExit,
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "exit 3 with a recovered Rclone access error and permission-denied source errors",
+    exit: 3,
+    diagnostics: lines(
+      CAPTURED.uploadRetried403,
+      CAPTURED.sourcePermissionDenied,
+      CAPTURED.partialExit,
+    ),
+    code: "source-entry-inaccessible",
+  },
+  {
+    name: "a JSON source error whose path and message look like storage lines",
+    exit: 1,
+    diagnostics: lines(
+      '{"message_type":"error","error":{"message":"read @SOURCE@/nfs/Price List(2024).xlsx: connection timed out"},"during":"archival","item":"@SOURCE@/nfs/Price List(2024).xlsx"}',
+      '{"message_type":"error","error":{"message":"read @SOURCE@/nfs/Save(<draft>) api error AccessDenied.txt: connection reset by peer"},"during":"archival","item":"@SOURCE@/nfs/Save(<draft>) api error AccessDenied.txt"}',
+      '{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot: synthetic local failure"}',
+    ),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "a refused endpoint until Restic gave up (exit_error)",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.uploadRefused,
+      CAPTURED.uploadGaveUp,
+      CAPTURED.unlockRefused,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a fatal storage failure after permission-denied source errors",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.sourcePermissionDenied,
+      CAPTURED.uploadRefused,
+      CAPTURED.uploadGaveUp,
+      CAPTURED.unlockRefused,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "uploads refused with 403 until Restic gave up",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.uploadRetried403,
+      CAPTURED.uploadGaveUp,
+      CAPTURED.unlockDenied,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-access-failed",
+  },
+  {
+    name: "uploads answered 503 until Restic gave up",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.uploadRetried503,
+      CAPTURED.uploadGaveUp,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "only the JSON exit_error of a repository open that timed out",
+    exit: 1,
+    diagnostics: lines(CAPTURED.repositoryOpenTimedOut),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "a rejected key hidden by the Rclone bridge (Stat retries, no provider text)",
+    exit: 1,
+    diagnostics: lines(CAPTURED.wrongKey),
+    code: "restic-backup-failed",
+  },
+  {
+    name: "more than 64 KB of source read errors before the decisive storage failure",
+    exit: 1,
+    diagnostics: lines(
+      Array.from({ length: 600 }, () => CAPTURED.sourceReadFailures).flat(),
+      CAPTURED.uploadRefused,
+      CAPTURED.uploadGaveUp,
+      CAPTURED.unlockRefused,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-transport-failed",
+  },
+  {
+    name: "an early recovered 403 retry and over 64 KB of source read errors before a decisive refused endpoint",
+    exit: 1,
+    diagnostics: lines(
+      CAPTURED.uploadRetried403,
+      Array.from({ length: 600 }, () => CAPTURED.sourceReadFailures).flat(),
+      CAPTURED.uploadRefused,
+      CAPTURED.uploadGaveUp,
+      CAPTURED.unlockRefused,
+      STORAGE_GAVE_UP_EXIT,
+    ),
+    code: "target-check-transport-failed",
+  },
+])
+  linuxExecutionTest(
+    `S3: captured Restic 0.19.1 JSON output with ${scenario.name} reports ${scenario.code}`,
+    async () => {
+      const fixture = await createS3ExecutionFixture({
+        backupExit: scenario.exit,
+        backupSignal: scenario.signal,
+        backupDiagnostics: scenario.diagnostics,
+      });
+      try {
+        await assert.rejects(
+          executeFilesystemBackup({
+            ...s3ExecutionInput(fixture),
+            payload: {
+              ...s3Version5Payload,
+              sourcePath: fixture.source,
+              sourceDiagnosticsVersion: 1,
+            },
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof BackupFilesystemError);
+            assert.equal(error.stage, "restic-backup");
+            assert.equal(error.code, scenario.code);
+            const text = JSON.stringify(error);
+            for (const leaked of [
+              "example.internal",
+              "192.0.2.",
+              "bucket-01",
+              "0123456789",
+              "Price List",
+              "AccessDenied",
+            ])
+              assert.ok(!text.includes(leaked), leaked);
+            return true;
+          },
+        );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+linuxExecutionTest(
+  "S3: SFTP Restic backup failures keep restic-backup-failed",
+  async () => {
+    const fixture = await createExecutionFixture("");
+    await writeFile(
+      path.join(fixture.binDir, "restic"),
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes("cat") && args.includes("config")) console.log(JSON.stringify({ version: 2, id: "c".repeat(64) }));
+else if (args.includes("snapshots")) process.exitCode = 1;
+else if (args.includes("backup")) { process.stderr.write("api error AccessDenied: Access Denied StatusCode: 403\\n"); process.exitCode = 1; }
+`,
+    );
+    try {
+      await assert.rejects(
+        executeFilesystemBackup(executionInput(fixture)),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.stage === "restic-backup" &&
+          error.code === "restic-backup-failed",
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);

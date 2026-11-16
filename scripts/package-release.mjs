@@ -24,7 +24,7 @@ const sourceCommit = git('rev-parse', '--verify', 'HEAD^{commit}')
   .trim();
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'))),
   version = 'v' + pkg.version;
-if (!/^v0\.7\.\d+$/.test(version) || !/^[a-f0-9]{40}$/.test(sourceCommit))
+if (!/^v0\.[78]\.\d+$/.test(version) || !/^[a-f0-9]{40}$/.test(sourceCommit))
   throw Error('Unsupported release identity');
 const epoch = git('show', '-s', '--format=%ct', 'HEAD').toString().trim();
 if (!/^\d+$/.test(epoch)) throw Error('Invalid source date');
@@ -142,7 +142,7 @@ const manifest = {
   platform: 'linux-x64',
   node: 'v22.23.4',
   pnpm: '10.20.0',
-  contract: 'pluton-agent-0.7.0',
+  contract: 'pluton-agent-0.8.0',
   activation:
     'reviewed-source-installer-only; app archive is not an activation bypass',
   artifacts: [sourceName, appName].map((file) => ({

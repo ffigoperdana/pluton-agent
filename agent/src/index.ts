@@ -50,6 +50,7 @@ function configFromArgs(args: string[]) {
     hookRoot: envConfig.PLUTON_AGENT_HOOK_ROOT,
     databaseBinDirs: envConfig.PLUTON_AGENT_DATABASE_BIN_DIRS,
     sourcePolicyFile: envConfig.PLUTON_AGENT_SOURCE_POLICY_FILE,
+    storageCaFile: envConfig.PLUTON_AGENT_STORAGE_CA_FILE,
   });
 }
 

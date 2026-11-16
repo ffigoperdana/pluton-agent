@@ -41,6 +41,10 @@ export type AgentCapabilities = {
   hooksConfigured?: boolean;
   sourceAccessVersion?: 1;
   sourceAccessModesVersion?: 1;
+  /** Repository types this Agent backs up to (S3 design 10.1); always contains "sftp". */
+  repositoryBackends?: ("sftp" | "s3")[];
+  /** Highest BACKUP_FILESYSTEM payload version this Agent accepts (S3 design 10.1). */
+  backupPayloadVersion?: 5;
 };
 
 export type AgentInventory = {
@@ -92,6 +96,11 @@ export type AgentConfig = {
   sourcePolicyFile?: string;
   allowInsecureHttp: boolean;
   caFile?: string;
+  /**
+   * Operator-installed CA bundle for S3 repositories (PLUTON_AGENT_STORAGE_CA_FILE),
+   * passed to Restic and Rclone as SSL_CERT_FILE. Never supplied by a command.
+   */
+  storageCaFile?: string;
   clientCertFile?: string;
   clientKeyFile?: string;
 };

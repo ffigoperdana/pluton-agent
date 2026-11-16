@@ -193,6 +193,35 @@ test_multiple_roots_and_private_ca_configuration() {
 	grep -Fx "PLUTON_AGENT_CA_FILE=\"$ca_file\"" "$root/etc/pluton-agent.env" >/dev/null
 }
 
+test_storage_ca_configuration() {
+	local root storage_ca
+	root="$(make_root storage-ca)"
+	storage_ca="$root/storage-ca.pem"
+	printf 'synthetic-storage-ca' > "$storage_ca"
+	run_installer "$root" --server https://pluton.example.internal --allowed-root "$root/source" --storage-ca-file "$storage_ca"
+	grep -Fx "PLUTON_AGENT_STORAGE_CA_FILE=\"$storage_ca\"" "$root/etc/pluton-agent.env" >/dev/null || fail 'The storage CA was not written to the environment file.'
+	if grep -q '^PLUTON_AGENT_CA_FILE=' "$root/etc/pluton-agent.env"; then
+		fail 'The storage CA must not become the control-plane CA.'
+	fi
+	run_installer "$root" --server https://pluton.example.internal --allowed-root "$root/source"
+	grep -Fx "PLUTON_AGENT_STORAGE_CA_FILE=\"$storage_ca\"" "$root/etc/pluton-agent.env" >/dev/null || fail 'Reinstall did not preserve the storage CA.'
+	root="$(make_root storage-ca-relative)"
+	if run_installer "$root" --server https://pluton.example.internal --allowed-root "$root/source" --storage-ca-file storage-ca.pem >/dev/null 2>&1; then
+		fail 'A relative storage CA path was accepted.'
+	fi
+	root="$(make_root storage-ca-link)"
+	printf 'synthetic-storage-ca' > "$root/target.pem"
+	ln -s "$root/target.pem" "$root/link.pem"
+	if run_installer "$root" --server https://pluton.example.internal --allowed-root "$root/source" --storage-ca-file "$root/link.pem" >/dev/null 2>&1; then
+		fail 'A symbolic-link storage CA path was accepted.'
+	fi
+	root="$(make_root storage-ca-control)"
+	printf 'synthetic-storage-ca' > "$root/ca"$'	'"x.pem"
+	if run_installer "$root" --server https://pluton.example.internal --allowed-root "$root/source" --storage-ca-file "$root/ca"$'	'"x.pem" >/dev/null 2>&1; then
+		fail 'A storage CA path with control characters was accepted.'
+	fi
+}
+
 test_platform_rejections() {
 	local root
 	root="$(make_root unsupported-arch)"
@@ -494,6 +523,7 @@ test_http_requires_explicit_opt_in
 test_quick_enrollment_token_is_accepted_without_persistence
 test_conflicting_enrollment_token_inputs_are_rejected
 test_multiple_roots_and_private_ca_configuration
+test_storage_ca_configuration
 test_platform_rejections
 test_checksum_mismatch_is_rejected
 test_private_binary_checksum_mismatch_is_rejected

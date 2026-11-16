@@ -4,11 +4,12 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
-import { constants } from "node:fs";
+import { constants, type Dirent } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { CommandStatusError, type CommandStatusCode } from "./commandStatus.js";
@@ -50,6 +51,12 @@ import {
   type LifecycleReport,
   type LifecycleStage,
 } from "./lifecyclePolicy.js";
+import {
+  openSealedCommandSecrets,
+  SealedSecretsError,
+  type CommandSealContext,
+  type SealedCommandSecrets,
+} from "./sealedSecrets.js";
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const PROGRESS_INTERVAL_MS = 5_000;
@@ -62,9 +69,28 @@ const PROGRESS_INTERVAL_MS = 5_000;
  */
 const SFTP_OPTION_KEYS = new Set(["host", "port", "user", "pass"]);
 
+/** Payload version 5 plain options (S3 design 10.2). Credentials only travel in `sealed`. */
+const SFTP_PLAIN_OPTION_KEYS = new Set(["host", "port", "user"]);
+const S3_PLAIN_OPTION_KEYS = new Set([
+  "provider",
+  "endpoint",
+  "region",
+  "location_constraint",
+  "acl",
+  "force_path_style",
+  "use_accept_encoding_gzip",
+  "no_check_bucket",
+]);
+const SEALED_ONLY_KEYS = new Set([
+  "pass",
+  "access_key_id",
+  "secret_access_key",
+  "repositoryPassword",
+]);
+
 export type BackupFilesystemPayload = {
   sourceDiagnosticsVersion?: 1;
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   lifecycle?: BackupLifecycle;
   backupId: string;
   planId: string;
@@ -72,13 +98,17 @@ export type BackupFilesystemPayload = {
   excludes: string[];
   repository: {
     remoteName: "pluton";
+    /** SFTP directory, or `bucket/prefix` for S3 (version 5 only). */
     path: string;
     initialize: boolean;
   };
   rclone: {
-    type: "sftp";
+    /** Versions 1 to 4 are SFTP-only; version 5 may name S3. */
+    type: "sftp" | "s3";
+    /** Plain options plus, in version 5, the opened sealed credentials. Never logged. */
     options: Record<string, string>;
   };
+  /** Plain in versions 1 to 4, opened from `sealed` in version 5. Never logged. */
   repositoryPassword: string;
 };
 
@@ -171,6 +201,8 @@ export type BackupFilesystemStageEvent = {
     | "source validated"
     | "temporary storage config created"
     | "repository check started"
+    | "storage access check started"
+    | "storage access verified"
     | "existing backup snapshot lookup started"
     | "initial repository verification started"
     | "repository verified"
@@ -297,6 +329,12 @@ export function toBackupFilesystemError(
             : "repository-check-failed",
     );
   }
+  if (
+    stage === "restic-backup" &&
+    error instanceof ProgramExitError &&
+    error.storageFailure
+  )
+    return new BackupFilesystemError(stage, error.storageFailure);
   const code: BackupFilesystemFailureCode =
     stage === "payload-validation"
       ? "invalid-payload"
@@ -350,6 +388,13 @@ class ProgramTimeoutError extends Error {
   }
 }
 
+/** A classified S3 Restic failure; provider text never leaves runProgram. */
+class ProgramExitError extends Error {
+  constructor(readonly storageFailure?: RepositoryTargetFailureCode) {
+    super("Backup process failed.");
+  }
+}
+
 type RepositoryTargetFailureCode =
   | "target-check-access-failed"
   | "target-check-auth-failed"
@@ -363,12 +408,22 @@ type ProcessOptions = {
   allowFailure?: boolean;
   classifyTargetFailure?: boolean;
   classifyRepositoryFailure?: boolean;
+  /** S3 `restic backup` only: map storage-specific provider text to closed codes. */
+  classifyBackupStorageFailure?: boolean;
   stdin?: string;
   shouldCancel: () => Promise<boolean>;
   onJsonLine?: (value: Record<string, unknown>) => Promise<void>;
   source?: string;
   sourceExcluded?: (relative: string) => boolean;
 };
+
+/** S3 SDK codes for a wrong or revoked key. Checked before 403 access, which they also carry. */
+const S3_AUTHENTICATION_FAILURE = /SignatureDoesNotMatch|InvalidAccessKeyId/;
+/** S3 refusals (AWS SDK v2 "StatusCode: 403", SDK v1 "status code: 403"). */
+const S3_ACCESS_FAILURE = /\bAccessDenied\b|status ?code: 403\b/i;
+/** Text only a storage transport produces: TCP/SSH, DNS, TLS, HTTP client timeouts and S3 5xx. */
+const STORAGE_TRANSPORT_FAILURE =
+  /dial tcp|connection refused|connection reset|connection closed|i\/o timeout|connection timed out|broken pipe|no route to host|network is unreachable|no such host|server misbehaving|x509: |tls: |TLS handshake timeout|Client\.Timeout exceeded|status ?code: 5\d\d\b|api error (?:InternalError|ServiceUnavailable|SlowDown)\b|(?:^|[\s:])(?:unexpected )?EOF(?:\s|$)/i;
 
 function repositoryDiagnostic(
   code: number | null,
@@ -378,11 +433,15 @@ function repositoryDiagnostic(
     code === 12 ||
     /wrong password|no key found|unable to authenticate|authentication failed|failed to authenticate|ssh: handshake failed.*authenticate/i.test(
       diagnostics,
-    )
+    ) ||
+    S3_AUTHENTICATION_FAILURE.test(diagnostics)
   )
     return "authentication-failed";
   if (
-    /permission denied|access denied|operation not permitted/i.test(diagnostics)
+    /permission denied|access denied|operation not permitted/i.test(
+      diagnostics,
+    ) ||
+    S3_ACCESS_FAILURE.test(diagnostics)
   )
     return "access-failed";
   if (classifyTargetFailure(diagnostics) === "target-check-transport-failed")
@@ -457,13 +516,173 @@ function validateRcloneOptions(value: unknown): Record<string, string> {
   return result;
 }
 
+function validateSftpPlainOptions(value: unknown): Record<string, string> {
+  const input = asRecord(value, "SFTP configuration");
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(input)) {
+    if (SEALED_ONLY_KEYS.has(key))
+      throw new Error("SFTP credentials must be sealed.");
+    if (!SFTP_PLAIN_OPTION_KEYS.has(key))
+      throw new Error("SFTP configuration contains an unsupported option.");
+    result[key] = requiredString(entry, `SFTP option ${key}`, 16_384);
+  }
+  if (!result.host || !result.user)
+    throw new Error("SFTP host and user are required.");
+  return result;
+}
+
+function validateS3PlainOptions(value: unknown): Record<string, string> {
+  const input = asRecord(value, "S3 configuration");
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(input)) {
+    if (SEALED_ONLY_KEYS.has(key))
+      throw new Error("S3 credentials must be sealed.");
+    if (!S3_PLAIN_OPTION_KEYS.has(key))
+      throw new Error("S3 configuration contains an unsupported option.");
+    result[key] = requiredString(entry, `S3 option ${key}`, 1_024);
+  }
+  let endpoint: URL | undefined;
+  try {
+    endpoint = new URL(result.endpoint || "");
+  } catch {
+    endpoint = undefined;
+  }
+  if (
+    !endpoint ||
+    endpoint.protocol !== "https:" ||
+    endpoint.origin !== result.endpoint
+  )
+    throw new Error("S3 endpoint must be an HTTPS origin.");
+  if (result.force_path_style !== "true")
+    throw new Error("S3 path-style addressing is required.");
+  if (result.use_accept_encoding_gzip !== "false")
+    throw new Error("S3 transfer compression must be disabled.");
+  if (
+    result.no_check_bucket !== undefined &&
+    result.no_check_bucket !== "true" &&
+    result.no_check_bucket !== "false"
+  )
+    throw new Error("S3 bucket check option is invalid.");
+  for (const key of ["provider", "region", "location_constraint", "acl"]) {
+    if (
+      result[key] !== undefined &&
+      !/^[A-Za-z0-9._-]{1,128}$/.test(result[key])
+    )
+      throw new Error(`S3 option ${key} is invalid.`);
+  }
+  return result;
+}
+
+/** S3 repositories are a prefix inside a bucket; the bucket root is never a repository. */
+function validateS3RepositoryPath(value: unknown): string {
+  const repositoryPath = validateRepositoryPath(value);
+  const segments = repositoryPath.split("/");
+  if (
+    repositoryPath.includes("\\") ||
+    segments.length < 2 ||
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  )
+    throw new Error("S3 repository path must be a prefix inside a bucket.");
+  return repositoryPath;
+}
+
+/** Open version 5 secrets and merge them into the validated plain options. */
+function openVersion5Secrets(
+  type: "sftp" | "s3",
+  optionsValue: unknown,
+  sealedValue: unknown,
+  commandSeal: CommandSealContext | undefined,
+): {
+  repositoryPassword: string;
+  options: Record<string, string>;
+  lifecycle: SealedCommandSecrets["lifecycle"];
+} {
+  const plain =
+    type === "s3"
+      ? validateS3PlainOptions(optionsValue)
+      : validateSftpPlainOptions(optionsValue);
+  if (!commandSeal)
+    throw new Error(
+      "Sealed command secrets require the leased command context.",
+    );
+  const secrets = openSealedCommandSecrets(sealedValue, commandSeal);
+  const { pass, access_key_id, secret_access_key } = secrets.rclone;
+  if (type === "sftp") {
+    if (!pass || access_key_id !== undefined || secret_access_key !== undefined)
+      throw new SealedSecretsError();
+    return {
+      repositoryPassword: secrets.repositoryPassword,
+      options: { ...plain, pass },
+      lifecycle: secrets.lifecycle,
+    };
+  }
+  if (!access_key_id || !secret_access_key || pass !== undefined)
+    throw new SealedSecretsError();
+  return {
+    repositoryPassword: secrets.repositoryPassword,
+    options: { ...plain, access_key_id, secret_access_key },
+    lifecycle: secrets.lifecycle,
+  };
+}
+
+/**
+ * Version 5 database passwords travel sealed (S3 design 10.3). Restore each one
+ * into a copy of its plain lifecycle entry; the signed payload object is never
+ * modified. A plain password, a database without a sealed password or a sealed
+ * password without a matching database refuses the command.
+ */
+function withSealedDatabasePasswords(
+  lifecycleValue: unknown,
+  sealed: SealedCommandSecrets["lifecycle"],
+): unknown {
+  const unmatched = new Map(Object.entries(sealed?.databases ?? {}));
+  let singleUnmatched = sealed?.database !== undefined;
+  const restore = (entry: unknown, password: string | undefined) => {
+    const database = asRecord(entry, "Database configuration");
+    if (Object.hasOwn(database, "password"))
+      throw new Error("Version 5 database passwords must be sealed.");
+    if (password === undefined)
+      throw new Error("A database has no sealed password.");
+    return { ...database, password };
+  };
+  let restored: unknown = lifecycleValue;
+  if (lifecycleValue !== undefined) {
+    const lifecycle = asRecord(lifecycleValue, "Lifecycle configuration");
+    const copy: Record<string, unknown> = { ...lifecycle };
+    if (lifecycle.database !== undefined) {
+      copy.database = restore(lifecycle.database, sealed?.database);
+      singleUnmatched = false;
+    }
+    if (Array.isArray(lifecycle.databases))
+      copy.databases = lifecycle.databases.map((entry) => {
+        const databaseId = asRecord(entry, "Database configuration").databaseId;
+        const password =
+          typeof databaseId === "string"
+            ? unmatched.get(databaseId)
+            : undefined;
+        if (typeof databaseId === "string") unmatched.delete(databaseId);
+        return restore(entry, password);
+      });
+    restored = copy;
+  }
+  if (singleUnmatched || unmatched.size)
+    throw new Error("A sealed database password has no matching database.");
+  return restored;
+}
+
 /**
  * Parse the short, server-signed workflow envelope. Unknown fields are refused
  * so this cannot gradually turn into a generic remote execution protocol.
+ * Version 5 (S3 design 10.2) adds S3 and carries every secret in `sealed`,
+ * opened with the leased command context before any file is written.
  */
 export function parseBackupFilesystemPayload(
   value: Record<string, unknown>,
+  commandSeal?: CommandSealContext,
 ): BackupFilesystemPayload {
+  const sealedVersion = value.version === 5;
+  if (sealedVersion && Object.hasOwn(value, "repositoryPassword"))
+    throw new Error("Version 5 secrets must be sealed.");
   const allowed = new Set([
     "version",
     "backupId",
@@ -472,14 +691,14 @@ export function parseBackupFilesystemPayload(
     "excludes",
     "repository",
     "rclone",
-    "repositoryPassword",
+    sealedVersion ? "sealed" : "repositoryPassword",
     "sourceDiagnosticsVersion",
-    ...([2, 3, 4].includes(value.version as number) ? ["lifecycle"] : []),
+    ...([2, 3, 4, 5].includes(value.version as number) ? ["lifecycle"] : []),
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
     throw new Error("Backup command contains unsupported fields.");
   }
-  if (![1, 2, 3, 4].includes(value.version as number))
+  if (![1, 2, 3, 4, 5].includes(value.version as number))
     throw new Error("Backup command version is unsupported.");
   if (
     value.sourceDiagnosticsVersion !== undefined &&
@@ -494,22 +713,37 @@ export function parseBackupFilesystemPayload(
   ) {
     throw new Error("Repository configuration is invalid.");
   }
-  if (rclone.type !== "sftp")
+  if (!sealedVersion && rclone.type !== "sftp")
     throw new Error("Only SFTP storage is supported by this agent.");
+  if (sealedVersion && rclone.type !== "sftp" && rclone.type !== "s3")
+    throw new Error("Storage type is unsupported by this agent.");
+  const storageType = rclone.type as "sftp" | "s3";
+  const opened = sealedVersion
+    ? openVersion5Secrets(
+        storageType,
+        rclone.options,
+        value.sealed,
+        commandSeal,
+      )
+    : undefined;
   const password = requiredString(
-    value.repositoryPassword,
+    opened ? opened.repositoryPassword : value.repositoryPassword,
     "Repository password",
     512,
   );
   if (password.length < 20) throw new Error("Repository password is invalid.");
+  const lifecycleInput = opened
+    ? withSealedDatabasePasswords(value.lifecycle, opened.lifecycle)
+    : value.lifecycle;
   const lifecycle =
     value.version === 1 ||
-    (value.version === 4 && value.lifecycle === undefined)
+    ((value.version === 4 || value.version === 5) &&
+      lifecycleInput === undefined)
       ? undefined
-      : parseBackupLifecycle(value.lifecycle);
+      : parseBackupLifecycle(lifecycleInput);
   if (
     lifecycle &&
-    value.version !== 4 &&
+    (value.version === 2 || value.version === 3) &&
     lifecycle.version !== (value.version === 3 ? 2 : 1)
   )
     throw new Error("Incompatible lifecycle envelope.");
@@ -523,17 +757,44 @@ export function parseBackupFilesystemPayload(
     planId: validateId(value.planId, "Plan ID"),
     sourcePath: requiredString(value.sourcePath, "Source path", 4_096),
     excludes:
-      value.version === 4
+      value.version === 4 || value.version === 5
         ? parseBackupExclusions(value.excludes)
         : validateExcludes(value.excludes),
     repository: {
       remoteName: "pluton",
-      path: validateRepositoryPath(repository.path),
+      path:
+        storageType === "s3"
+          ? validateS3RepositoryPath(repository.path)
+          : validateRepositoryPath(repository.path),
       initialize: repository.initialize,
     },
-    rclone: { type: "sftp", options: validateRcloneOptions(rclone.options) },
+    rclone: {
+      type: storageType,
+      options: opened ? opened.options : validateRcloneOptions(rclone.options),
+    },
     repositoryPassword: password,
   };
+}
+
+/**
+ * Version 5 replaces 1 to 4 for Agents that accept it, so it keeps the source
+ * rules of the version the server would otherwise send. With exclusions that is
+ * version 4: anchored exclusions, the pre-backup scan and excluded-path source
+ * diagnostics. Without exclusions the source rules of versions 1 to 3 apply.
+ */
+function usesVersion4SourceRules(payload: BackupFilesystemPayload): boolean {
+  return (
+    payload.version === 4 ||
+    (payload.version === 5 && payload.excludes.length > 0)
+  );
+}
+
+/** Version 3, and version 5 with a version 2 lifecycle, bind the source and recover receipts. */
+function bindsApplicationSource(payload: BackupFilesystemPayload): boolean {
+  return (
+    payload.version === 3 ||
+    (payload.version === 5 && payload.lifecycle?.version === 2)
+  );
 }
 
 function isWithin(parent: string, child: string): boolean {
@@ -575,24 +836,143 @@ function classifyTargetFailure(
   if (
     /unable to authenticate|authentication failed|no supported methods remain|permission denied \((?:publickey|password|keyboard-interactive)/i.test(
       diagnostics,
-    )
+    ) ||
+    S3_AUTHENTICATION_FAILURE.test(diagnostics)
   ) {
     return "target-check-auth-failed";
   }
   if (
     /permission denied|access denied|SSH_FX_PERMISSION_DENIED|operation not permitted/i.test(
       diagnostics,
-    )
+    ) ||
+    S3_ACCESS_FAILURE.test(diagnostics)
   ) {
     return "target-check-access-failed";
   }
-  if (
-    /dial tcp|connection refused|connection reset|connection closed|i\/o timeout|connection timed out|broken pipe|no route to host|network is unreachable|no such host|(?:^|[\s:])(?:unexpected )?EOF(?:\s|$)/i.test(
-      diagnostics,
-    )
-  ) {
+  if (STORAGE_TRANSPORT_FAILURE.test(diagnostics)) {
     return "target-check-transport-failed";
   }
+  return undefined;
+}
+
+/** Keeps the last `limit` characters: the decisive final error of a long run. */
+function appendTail(
+  existing: string,
+  chunk: string,
+  limit = MAX_OUTPUT_BYTES,
+): string {
+  const combined = existing + chunk;
+  return combined.length > limit
+    ? combined.slice(combined.length - limit)
+    : combined;
+}
+
+/**
+ * Restic 0.19.1 `backup --json` stderr through its Rclone backend, as captured
+ * against Rclone 1.75.1 `serve s3` (docs/S3_REPOSITORY.md):
+ * - per-file source errors: `{"message_type":"error","error":{"message":...},"during":"scan"|"archival","item":...}`;
+ * - the final error: `{"message_type":"exit_error","code":N,"message":"Fatal: ..."}`
+ *   (`Fatal: ...` in text mode);
+ * - backend retries in plain text: `Save(<data/0123456789>) returned error, retrying after 1s: ...`,
+ *   `... failed: ...` when Restic gives up (also `Load(<`, `Stat(<`, `Remove(<`, `List(`);
+ * - Rclone's own stderr, prefixed `rclone: `, which alone carries the provider text
+ *   (the bridge answers Restic with a bare HTTP 500).
+ *
+ * Text-mode source lines: `error: ...`, Go-wrapped `open`/`lstat`/`read`/`readdir`
+ * lines and `cannot read` messages, with absolute or job-relative paths.
+ */
+const BACKUP_SOURCE_READ_LINE =
+  /^(?:error: |(?:open|lstat|read|readdir|Lstat) |.*\bcan(?:not| not) read\b)/;
+/** Rclone stderr forwarded by Restic. Always storage, even if it also matches a source pattern. */
+const BACKUP_RCLONE_LINE = /^rclone: /;
+/** Restic backend calls and text-mode fatal errors, anchored so file names never match. */
+const BACKUP_BACKEND_CONTEXT_LINE =
+  /^(?:Fatal: |(?:Save|Load|Stat|Remove)\(<|List\()/;
+/**
+ * A final error that names the storage backend: Restic's REST client to the Rclone
+ * bridge (`unexpected HTTP response (%v): %v`, internal/backend/rest) and the bridge
+ * start-up check (`error talking HTTP to rclone: %w`, internal/backend/rclone).
+ */
+const RESTIC_BACKEND_FINAL_ERROR =
+  /unexpected HTTP response \(|error talking HTTP to rclone/;
+/**
+ * Restic's retry backend gave up on a backend call (`"%v failed: %v"`,
+ * internal/global/global.go) because the storage answered with an HTTP error.
+ * `returned error, retrying` lines are not final. Restic also gives up at once on
+ * errors it treats as permanent, which are no evidence of an outage: not-exist
+ * (404), a range error (416) and the bridge's `rclone stdio connection already
+ * closed` (the Rclone child died, for example OOM); those never count.
+ */
+const RESTIC_BACKEND_GAVE_UP =
+  /^(?:(?:Save|Stat|Remove)\(<[^>]*>\)|Load\(<[^>]*>, \d+, \d+\)|List\([^)]*\)) failed: .*unexpected HTTP response \((?!(?:404|416)\))\d+\)/;
+
+/** The message of a Restic JSON `exit_error`; every other JSON line (source errors included) is not storage. */
+function resticExitErrorMessage(line: string): string | undefined {
+  try {
+    const record = JSON.parse(line) as {
+      message_type?: unknown;
+      message?: unknown;
+    } | null;
+    return record?.message_type === "exit_error" &&
+      typeof record.message === "string"
+      ? record.message
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A storage failure only when the run ended because of storage: Restic exited 1
+ * (Restic 0.19.1 main.go maps every error except unreadable source files (3), no
+ * repository (10), an existing lock (11), a wrong password (12) and cancellation
+ * (130) to 1; 2 is a Go crash; a signal or the Agent's deadline has none) and
+ * either its decisive final error names the backend or it gave up on a backend
+ * call that the storage answered with an HTTP error. Retries Restic recovered from
+ * never count on their own. Only then do the storage lines of the bounded tail
+ * choose the category (Restic backup stderr also carries source errors).
+ */
+function classifyBackupStorageFailure(
+  diagnostics: string,
+  code: number | null,
+  trimmed = false,
+): RepositoryTargetFailureCode | undefined {
+  if (code !== 1) return undefined;
+  const lines = diagnostics.split(/\r\n|\r|\n/);
+  // A tail cut mid-line could turn part of a JSON source record into a plain line.
+  if (trimmed) lines.shift();
+  const candidates: string[] = [];
+  let finalError: string | undefined;
+  let gaveUp = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line.startsWith("{")) {
+      const message = resticExitErrorMessage(line);
+      if (message === undefined) continue;
+      finalError = message;
+      if (!BACKUP_SOURCE_READ_LINE.test(message)) candidates.push(message);
+      continue;
+    }
+    if (line.startsWith("Fatal: ")) finalError = line;
+    if (RESTIC_BACKEND_GAVE_UP.test(line)) gaveUp = true;
+    if (
+      BACKUP_RCLONE_LINE.test(line) ||
+      (!BACKUP_SOURCE_READ_LINE.test(line) &&
+        BACKUP_BACKEND_CONTEXT_LINE.test(line))
+    )
+      candidates.push(line);
+  }
+  if (
+    !gaveUp &&
+    !(finalError !== undefined && RESTIC_BACKEND_FINAL_ERROR.test(finalError))
+  )
+    return undefined;
+  const storage = candidates.join("\n");
+  if (S3_AUTHENTICATION_FAILURE.test(storage))
+    return "target-check-auth-failed";
+  if (S3_ACCESS_FAILURE.test(storage)) return "target-check-access-failed";
+  if (STORAGE_TRANSPORT_FAILURE.test(storage))
+    return "target-check-transport-failed";
   return undefined;
 }
 
@@ -669,6 +1049,9 @@ async function runProgram(
     });
     let stdout = "";
     let diagnostics = "";
+    // S3 `restic backup` only: the tail, where Restic prints its decisive final error.
+    let backupDiagnostics = "";
+    let backupDiagnosticsTrimmed = false;
     let stdoutBuffer = "";
     let stderrBuffer = "";
     let sourceFailure: SourceAccessCode | undefined;
@@ -759,6 +1142,12 @@ async function runProgram(
       if (options.classifyTargetFailure || options.classifyRepositoryFailure) {
         diagnostics = appendBounded(diagnostics, String(chunk));
       }
+      if (options.classifyBackupStorageFailure) {
+        const text = String(chunk);
+        backupDiagnosticsTrimmed ||=
+          backupDiagnostics.length + text.length > MAX_OUTPUT_BYTES;
+        backupDiagnostics = appendTail(backupDiagnostics, text);
+      }
       if (options.source) {
         stderrBuffer = appendBounded(stderrBuffer, String(chunk));
         const lines = stderrBuffer.split("\n");
@@ -784,6 +1173,8 @@ async function runProgram(
         () => {
           if (statusFailure) return reject(statusFailure);
           if (cancelled) return reject(new BackupCancelledError());
+          // The Agent's own deadline (for example a source read hung on an NFS hard
+          // mount) is never a storage failure, for S3 as for SFTP.
           if (timedOut) {
             const reason = options.classifyRepositoryFailure
               ? repositoryDiagnostic(code, diagnostics)
@@ -796,6 +1187,19 @@ async function runProgram(
           }
           consumeSourceLine(stderrBuffer);
           if ((code !== 0 || sourceFailure) && !options.allowFailure) {
+            // A fatal S3 storage failure (exit 1 with a backend final error) is why the
+            // backup stopped, even when source files were also unreadable. The server
+            // accepts per-file source diagnostics only with a source failure code.
+            const storageFailure =
+              options.classifyBackupStorageFailure && code !== 0
+                ? classifyBackupStorageFailure(
+                    backupDiagnostics,
+                    code,
+                    backupDiagnosticsTrimmed,
+                  )
+                : undefined;
+            if (storageFailure)
+              return reject(new ProgramExitError(storageFailure));
             if (sourceFailure)
               return reject(
                 new SourceAccessError(
@@ -807,9 +1211,11 @@ async function runProgram(
                 ),
               );
             return reject(
-              new Error(
-                `Backup process exited with status ${code ?? "unknown"}.`,
-              ),
+              options.classifyBackupStorageFailure
+                ? new ProgramExitError()
+                : new Error(
+                    `Backup process exited with status ${code ?? "unknown"}.`,
+                  ),
             );
           }
           resolve({
@@ -889,20 +1295,107 @@ async function verifyRepository(
   }
 }
 
+/**
+ * S3 credentials and reachability, checked by Rclone directly before Restic:
+ * Restic's Rclone bridge (`rclone serve restic`) turns provider errors into
+ * plain HTTP statuses. A missing prefix lists as empty with exit 0; any other
+ * exit, including 3 (missing bucket), fails without a retry loop.
+ */
+async function checkS3RepositoryAccess(
+  rclone: string,
+  target: string,
+  env: NodeJS.ProcessEnv,
+  shouldCancel: () => Promise<boolean>,
+  diagnostic: (reason: RepositoryDiagnostic) => void,
+): Promise<void> {
+  let reason: RepositoryDiagnostic | undefined;
+  try {
+    const result = await runProgram(rclone, ["lsf", target], {
+      env,
+      shouldCancel,
+      timeoutMs: 30_000,
+      allowFailure: true,
+      classifyRepositoryFailure: true,
+    });
+    if (result.code === 0) return;
+    reason = result.repositoryFailure;
+  } catch (error) {
+    if (
+      error instanceof BackupCancelledError ||
+      error instanceof CommandStatusError
+    )
+      throw error;
+    reason =
+      error instanceof ProgramTimeoutError
+        ? error.diagnostic || "timeout"
+        : "process-failed";
+  }
+  diagnostic(reason || "process-failed");
+  throw new BackupFilesystemError(
+    "repository-check",
+    reason === "authentication-failed"
+      ? "target-check-auth-failed"
+      : reason === "access-failed"
+        ? "target-check-access-failed"
+        : reason === "transport-failed" || reason === "timeout"
+          ? "target-check-transport-failed"
+          : "repository-check-failed",
+  );
+}
+
 function rcloneConfigValue(value: string): string {
   if (/[\r\n\x00]/.test(value))
-    throw new Error("SFTP configuration contains an unsafe value.");
+    throw new Error("Storage configuration contains an unsafe value.");
   return value;
+}
+
+/** `mkdtemp(path.join(dataDir, "rclone-"))` names: the prefix and six letters or digits. */
+const TEMPORARY_STORAGE_CONFIG_DIRECTORY = /^rclone-[A-Za-z0-9]{6}$/;
+
+/**
+ * A temporary storage config (plain S3 keys, obscured SFTP password) is removed
+ * in `finally`, which SIGKILL, OOM or power loss can skip. Called at Agent
+ * start-up, before any command runs. Removes only real directories with the
+ * exact `mkdtemp` name; symbolic links and every other entry are kept.
+ */
+export async function sweepStaleStorageConfigs(
+  dataDir: string,
+): Promise<number> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dataDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (
+      !entry.isDirectory() ||
+      !TEMPORARY_STORAGE_CONFIG_DIRECTORY.test(entry.name)
+    )
+      continue;
+    await rm(path.join(dataDir, entry.name), { recursive: true, force: true });
+    removed++;
+  }
+  return removed;
 }
 
 export async function writeTemporaryRcloneConfig(
   dataDir: string,
   options: Record<string, string>,
+  type: "sftp" | "s3" = "sftp",
 ): Promise<{ directory: string; configPath: string }> {
   const directory = await mkdtemp(path.join(dataDir, "rclone-"));
   await chmod(directory, 0o700);
   const configPath = path.join(directory, "rclone.conf");
-  const lines = ["[pluton]", "type = sftp"];
+  // S3 keys stay plain in this 0600 file (rclone obscure is SFTP-only) and an S3
+  // remote never falls back to ambient AWS credentials of the Agent host.
+  const lines = [
+    "[pluton]",
+    `type = ${type}`,
+    ...(type === "s3" ? ["env_auth = false"] : []),
+  ];
   for (const key of Object.keys(options).sort()) {
     lines.push(`${key} = ${rcloneConfigValue(options[key])}`);
   }
@@ -1040,7 +1533,12 @@ async function ensureManagedRepository(
   // Rclone reserves exit code 3 for fs.ErrorDirNotFound. Do not infer absence
   // from free-form "not found" text (e.g. a missing config or SSH key), exit
   // code 4 (file not found), or any authentication/access/transport failure.
-  const missingTarget = listing.code === 3 && !listing.targetFailureCode;
+  // S3 has no directories: a missing prefix lists as empty with exit 0, and
+  // exit 3 means the bucket itself is missing, which never permits init.
+  const missingTarget =
+    payload.rclone.type === "sftp" &&
+    listing.code === 3 &&
+    !listing.targetFailureCode;
   if (listing.code !== 0 && !missingTarget) {
     throw new BackupFilesystemError(
       "repository-target-check",
@@ -1252,7 +1750,7 @@ async function confirmLifecycleSnapshot(
     );
     if (matches.length !== 1) throw new Error("Snapshot binding failed.");
     const fullId = matches[0].id as string;
-    if (payload.version === 3) {
+    if (bindsApplicationSource(payload)) {
       if (
         !Array.isArray(matches[0].paths) ||
         !matches[0].paths.includes(source)
@@ -1317,7 +1815,7 @@ async function confirmLifecycleSnapshot(
           db.databaseId,
           db.engine,
         );
-      if (payload.version === 3 && expectedReport && !expected) {
+      if (bindsApplicationSource(payload) && expectedReport && !expected) {
         // Local completion receipt lost: recover hashes from the existing tagged
         // snapshot, never rerun hooks/dumps or materialize SQL in the live source.
         const digest = await runLifecycleProcess({
@@ -1382,6 +1880,8 @@ export function appendSourceBackupExcludes(
 
 export async function executeFilesystemBackup(input: {
   payload: Record<string, unknown>;
+  /** Leased-command context that opens version 5 sealed secrets. Never logged. */
+  commandSeal?: CommandSealContext;
   config: AgentConfig;
   allowedRoots: string[];
   serverManagedSource?: boolean;
@@ -1435,7 +1935,10 @@ export async function executeFilesystemBackup(input: {
   };
 
   try {
-    const payload = parseBackupFilesystemPayload(input.payload);
+    const payload = parseBackupFilesystemPayload(
+      input.payload,
+      input.commandSeal,
+    );
     setStage("payload-validation", "command accepted");
 
     setStage("source-validation");
@@ -1449,10 +1952,9 @@ export async function executeFilesystemBackup(input: {
     ).resolvedPath;
     if (input.serverManagedSource && sourcePathContainsPrivateDirectory(source))
       throw new SourceAccessError("source-policy-violation");
-    const userExcludes =
-      payload.version === 4
-        ? sourceResticExclusions(source, payload.excludes)
-        : payload.excludes;
+    const userExcludes = usesVersion4SourceRules(payload)
+      ? sourceResticExclusions(source, payload.excludes)
+      : payload.excludes;
     emitStage({
       stage: "source-validation",
       message: "source validated",
@@ -1460,7 +1962,7 @@ export async function executeFilesystemBackup(input: {
 
     setStage("state-validation");
     await assertSourceDoesNotOverlapState(source, input.config.dataDir);
-    if (payload.version === 4) {
+    if (usesVersion4SourceRules(payload)) {
       setStage("source-validation");
       const scan = await preflightSource(
         payload.sourcePath,
@@ -1499,17 +2001,31 @@ export async function executeFilesystemBackup(input: {
       RESTIC_CACHE_DIR: path.join(input.config.dataDir, "restic-cache"),
     };
     const rcloneEnv: NodeJS.ProcessEnv = { PATH: env.PATH };
-    setStage("sftp-password-obscure");
-    const rcloneOptions = await obscureSensitiveSftpOptions(
-      rclone,
-      payload.rclone.options,
-      rcloneEnv,
-      input.shouldCancel,
-    );
+    let rcloneOptions = payload.rclone.options;
+    if (payload.rclone.type === "sftp") {
+      setStage("sftp-password-obscure");
+      rcloneOptions = await obscureSensitiveSftpOptions(
+        rclone,
+        payload.rclone.options,
+        rcloneEnv,
+        input.shouldCancel,
+      );
+    }
     setStage("temporary-storage-config");
+    if (payload.rclone.type === "s3" && input.config.storageCaFile) {
+      // Operator-installed trust only; the server never sends CA files.
+      const storageCa = assertRootOwnedPath(
+        input.config.storageCaFile,
+        false,
+        true,
+      );
+      env.SSL_CERT_FILE = storageCa;
+      rcloneEnv.SSL_CERT_FILE = storageCa;
+    }
     temporary = await writeTemporaryRcloneConfig(
       input.config.dataDir,
       rcloneOptions,
+      payload.rclone.type,
     );
     emitStage({
       stage: "temporary-storage-config",
@@ -1524,6 +2040,28 @@ export async function executeFilesystemBackup(input: {
       stage: "repository-check",
       message: "repository check started",
     });
+    if (payload.rclone.type === "s3") {
+      emitStage({
+        stage: "repository-check",
+        message: "storage access check started",
+      });
+      await checkS3RepositoryAccess(
+        rclone,
+        `${payload.repository.remoteName}:${payload.repository.path}`,
+        rcloneEnv,
+        input.shouldCancel,
+        (diagnostic) =>
+          emitStage({
+            stage: "repository-check",
+            message: "real repository failure",
+            diagnostic,
+          }),
+      );
+      emitStage({
+        stage: "repository-check",
+        message: "storage access verified",
+      });
+    }
     emitStage({
       stage: "repository-check",
       message: "existing backup snapshot lookup started",
@@ -1540,7 +2078,7 @@ export async function executeFilesystemBackup(input: {
         setStage("snapshot-confirmation");
         const replayReport: LifecycleReport = {
           warnings: [],
-          ...(payload.version === 3 ? { databases: [] } : {}),
+          ...(bindsApplicationSource(payload) ? { databases: [] } : {}),
         };
         const fullId = await confirmLifecycleSnapshot(
           restic,
@@ -1739,7 +2277,7 @@ export async function executeFilesystemBackup(input: {
         await preflightSource(
           payload.sourcePath,
           input.allowedRoots,
-          payload.version === 4
+          usesVersion4SourceRules(payload)
             ? {
                 scan: true,
                 collectProblems: payload.sourceDiagnosticsVersion === 1,
@@ -1783,7 +2321,8 @@ export async function executeFilesystemBackup(input: {
     await runProgram(restic, args, {
       env,
       source,
-      ...(payload.version === 4
+      classifyBackupStorageFailure: payload.rclone.type === "s3",
+      ...(usesVersion4SourceRules(payload)
         ? {
             sourceExcluded: compileBackupExclusions([
               ...payload.excludes,

@@ -1,20 +1,26 @@
 {
   "format": 1,
-  "agentVersion": "0.7.1",
+  "agentVersion": "0.8.0",
   "baseRevision": "095088beeb3a10dc5fdda4f55db07fa4d17240be",
   "extractionManifestSha256": "418785c9cdf1d3986b19b5671e30a612b7ac791f63b1201f136a274e66fb3404",
   "changes": [
     {
       "file": "agent/src/backupFilesystem.test.ts",
       "extractedSha256": "3f952363db42a6e419a7392fd2b0e8d0d764018a4c96b8397f18521fbe1030c7",
-      "sha256": "a7820a8a6b2788007f49e9c998427a66be33aea5002384dcd1abc29c271fe183",
-      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+      "sha256": "e08c2e4423d8d466ab766167a91d76491a225e9e60837e9a291672fad19f26e8",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged. Final review fixes: S3 restic backup failures are classified from the bounded stderr tail of the captured Restic 0.19.1 JSON shapes (exit 3 and JSON source errors never storage); stale temporary storage configs are swept at service start-up. Final review round 2: an S3 restic backup failure is a storage failure only when Restic exited 1 with a backend final error or a give-up line; signals, deadlines, crashes and other exit codes never are. Final review round 3: only a give-up line whose own error is an HTTP answer other than 404 or 416 counts toward an S3 storage failure."
     },
     {
       "file": "agent/src/backupFilesystem.ts",
       "extractedSha256": "b7ab6ce1f18ca0380e595f5ce543bbaa749955b0813a82325b18281e7d477e02",
-      "sha256": "f5956223785e346cadc6b9cd82b273929256f63e9b30ad731342747c7fe2d35a",
-      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
+      "sha256": "bd5cfbed084ae7752a7b129f6f0f6e515dc5ca8b892b9b9a402a031fc5ee7d4b",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged. Final review fixes: S3 restic backup failures are classified from the bounded stderr tail of the captured Restic 0.19.1 JSON shapes (exit 3 and JSON source errors never storage); stale temporary storage configs are swept at service start-up. Final review round 2: an S3 restic backup failure is a storage failure only when Restic exited 1 with a backend final error or a give-up line; signals, deadlines, crashes and other exit codes never are. Final review round 3: only a give-up line whose own error is an HTTP answer other than 404 or 416 counts toward an S3 storage failure."
+    },
+    {
+      "file": "agent/src/backupLifecycle.test.ts",
+      "extractedSha256": "609e33563eaba5a2d07eddd16655661a8e0aa54a232c7700dcb79864ea5af28a",
+      "sha256": "d52f411eb4c5dd81b9cdcb6eb4baecc4a8f474f3a9f2e02fb188a15f72b45178",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     },
     {
       "file": "agent/src/backupLifecycle.ts",
@@ -45,6 +51,18 @@
       "extractedSha256": null,
       "sha256": "7768cab221800e74632a5a411d15c2df6896422ccd07e541ee940cdbdd408205",
       "reason": "Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
+    },
+    {
+      "file": "agent/src/config.test.ts",
+      "extractedSha256": "e292523c9beba741a2ad70cb1b35c545fd548f5549746cca4a0513a461c37dde",
+      "sha256": "4b22b0167fb55227790d8d4cfecee865bdbca83fa8edb3e14090f7f8e8b27d3b",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
+    },
+    {
+      "file": "agent/src/config.ts",
+      "extractedSha256": "6ef32dff93a7f188d1044df12b621215ded8f35892ce970847ae56ef6d692713",
+      "sha256": "dd04c9c9256671f5b2da76907326b5a9d1514955d06b4b324a4cb2f0c6f7df3d",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     },
     {
       "file": "agent/src/enrollmentState.test.ts",
@@ -79,14 +97,20 @@
     {
       "file": "agent/src/index.ts",
       "extractedSha256": "23aea99d92bd687525ec8f32f3a3594d572ff562396be0990ac4b81842ce7118",
-      "sha256": "b43c4b77c99e97c65e216bb5decc81077249cc60f539f061a6bf12129b7df5cc",
-      "reason": "Use exclusive enrollment persistence and expose an explicit read-only HTTPS network diagnostic with no credentials or identity options."
+      "sha256": "ca3af70c0078c5c53a3037930d72ca011015dce1676557e15d53147a9fccfe0b",
+      "reason": "Use exclusive enrollment persistence and expose an explicit read-only HTTPS network diagnostic with no credentials or identity options. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
+    },
+    {
+      "file": "agent/src/inventory.test.ts",
+      "extractedSha256": "418e4e6d098f739ec21d24422bb12708045c8cc5db6dd42100d413b0e13cb797",
+      "sha256": "dae31f12a4bfb746ae929c54c54e039a4dd1a861f3ecf60300ae97230e3aad80",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     },
     {
       "file": "agent/src/inventory.ts",
       "extractedSha256": "22d254eac93e3e5c5c38b184b08ebd9b9dc94d905fc5ac0e28eacc0b27529910",
-      "sha256": "00a4190bb27d508541b1a76bcb64116aa6c9c8abb6dc78a1b65b77a1b02a177e",
-      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+      "sha256": "b991c60767032502e6c267bb43472b659fabd7cae50fc4d29a1ea84f40bdd04a",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     },
     {
       "file": "agent/src/lifecyclePolicy.ts",
@@ -119,6 +143,12 @@
       "reason": "Probe automatic/IPv4/IPv6 verified HTTPS health GETs without private state; report shared 15-second DNS and 30-second total budgets."
     },
     {
+      "file": "agent/src/operationalHardening.test.ts",
+      "extractedSha256": "26c4f9ffd89c94758b428756850aac455d22c8419f301d8486dfba16503524af",
+      "sha256": "870d5e2bb56eac1aa9ae1a459e761550c1f7e41e66212a67548f78c43b39035d",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged. Final review fixes: S3 restic backup failures are classified from the bounded stderr tail of the captured Restic 0.19.1 JSON shapes (exit 3 and JSON source errors never storage); stale temporary storage configs are swept at service start-up."
+    },
+    {
       "file": "agent/src/progressDelivery.ts",
       "extractedSha256": "78c7d3c2ebe16b14943a33daeb5723610863da0f6148c85fc13a8d4c94328c71",
       "sha256": "be47b328b6e0ef78b6d1ec39d18f71717b12ddcef26925f1c610d11e0dcd46d4",
@@ -127,8 +157,26 @@
     {
       "file": "agent/src/runtime.ts",
       "extractedSha256": "89fb7c357291bab42fc73628fa4f2bbdf798ef55ede69563e89445b22f0369a9",
-      "sha256": "b93212942121aaebfc7c5b901165de0fae6734ec7e7f6f513a06053b218ec04d",
-      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts."
+      "sha256": "aa6399f77746ac964e20f05b3a5fca35a41cac55df8f76cac0ec924ca6a94393",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. Semantic PR #53 port: bounded exact-lease status checks, closed diagnostics, native cancellation and paced best-effort progress, preserving standalone connection/TLS and void ACK contracts. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged. Final review fixes: S3 restic backup failures are classified from the bounded stderr tail of the captured Restic 0.19.1 JSON shapes (exit 3 and JSON source errors never storage); stale temporary storage configs are swept at service start-up."
+    },
+    {
+      "file": "agent/src/sealedCommandRuntime.test.ts",
+      "extractedSha256": null,
+      "sha256": "0a8878bcbd504bc9b5d54297f9dfaed616ce12a8480560002b1b504b710e20d1",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
+    },
+    {
+      "file": "agent/src/sealedSecrets.test.ts",
+      "extractedSha256": null,
+      "sha256": "463fed7dc2a01cf677e775effb022cdb79db0420d0653a80d92f40252f692ba5",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
+    },
+    {
+      "file": "agent/src/sealedSecrets.ts",
+      "extractedSha256": null,
+      "sha256": "3aacf559fde6611abcceefe0d3e73fa0ef6c4678a9a7e67b415bef0bcf5e573e",
+      "reason": "S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     },
     {
       "file": "agent/src/sourceAccessRuntime.test.ts",
@@ -163,8 +211,8 @@
     {
       "file": "agent/src/types.ts",
       "extractedSha256": "591c87bf41b4f7b4c2727cf5c3140e321b6fdacbdb74ece3e21de3eb6be7f713",
-      "sha256": "6b368d6ccbad9414df0cbbb709be5449b0fc94d443f430698f94217ed3088929",
-      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes."
+      "sha256": "4b5a7e812ee9d782a9255e98d46d89da6467433289e81b8c6162b6903c68ff23",
+      "reason": "Bounded relative source diagnostics with signed opt-in negotiation, closed OS categories, safe path redaction, failure preservation and separate private completion metadata; no permissions or trust boundary changes. S3 repository stage 1 (Agent 0.8.0): BACKUP_FILESYSTEM payload version 5 with sealed secrets (HKDF-SHA256 and AES-256-GCM bound to the command ID and lease token), S3 option allowlist, operator storage CA, S3 access and empty-target checks and closed S3 failure classification; payload versions 1 to 4 unchanged."
     }
   ]
 }

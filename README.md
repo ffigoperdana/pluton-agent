@@ -1,7 +1,7 @@
 # Pluton Linux Managed Agent
 
 Standalone, outbound-only Linux Managed Agent for the open-source Pluton community
-fork. Agent capability version **0.7.0**; target **Ubuntu Server 22.04 LTS,
+fork. Agent version **0.8.0**; target **Ubuntu Server 22.04 LTS,
 x86_64, systemd and cgroup v2**. Ubuntu **24.04 LTS** passes disposable userland
 validation; full native support awaits booted-VM acceptance.
 See the [Ubuntu audit and test results](docs/UBUNTU_VALIDATION.md).
@@ -19,13 +19,16 @@ Administrator browser --> compatible Pluton Server (enrollment, signed queue, UI
                                       | outbound verified HTTPS / authenticated Agent
                               Linux Managed Agent
                                 | authorized source + constrained DB/hooks
-                                +--> encrypted Restic backup --> SFTP primary
-Server verifies primary, performs optional S3 replication and hosts recovery.
+                                +--> encrypted Restic backup --> SFTP or S3 primary
+Server verifies the primary, replicates SFTP primaries to S3 when configured and
+hosts recovery. The Agent receives the S3 key of its own S3-primary plans only;
+never replica keys.
 ```
 
 Start with [installation and operations](docs/OPERATIONS.md), then
 [compatibility](docs/COMPATIBILITY.md), [upgrade/rollback](docs/AGENT_UPGRADE.md),
-[releases](docs/RELEASES.md) and the [extraction audit/migration plan](docs/EXTRACTION_AUDIT.md).
+[releases](docs/RELEASES.md), [S3 repositories](docs/S3_REPOSITORY.md) and the
+[extraction audit/migration plan](docs/EXTRACTION_AUDIT.md).
 
 ## New host: clone only this repository
 
