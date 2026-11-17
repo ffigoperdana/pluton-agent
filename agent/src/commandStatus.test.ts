@@ -3,7 +3,7 @@ import http from "node:http";
 import test from "node:test";
 import { AgentClient } from "./client.js";
 import { AgentTransport, AgentHttpError } from "./transport.js";
-import { CommandStatusError } from "./commandStatus.js";
+import { CommandStatusError, leaseBoundCancellationCheck } from "./commandStatus.js";
 import { toBackupFilesystemError } from "./backupFilesystem.js";
 import { ProgressDelivery } from "./progressDelivery.js";
 import { AgentNetworkError } from "./network.js";
@@ -288,4 +288,89 @@ test("fast event bursts are throttled/coalesced and a throwing diagnostic callba
   assert.equal(sent.length, 2);
   assert.equal(sent[1].progress.bytesProcessed, 99);
   assert(times[1] - times[0] >= 29);
+});
+
+test("an outage does not stop a command while its lease runs; the lease still bounds it", async () => {
+  let now = 1_000_000;
+  let lease: number | undefined = now + 600_000;
+  let failure: unknown = new CommandStatusError("control-plane-unavailable");
+  const lines: string[] = [];
+  const check = leaseBoundCancellationCheck({
+    status: async () => {
+      if (failure) throw failure;
+      return { cancelled: false };
+    },
+    leaseDeadline: () => lease,
+    aborted: () => false,
+    now: () => now,
+    log: { info: (line: string) => lines.push(line), warn: (line: string) => lines.push(line) },
+  });
+  for (const code of [
+    "control-plane-unavailable",
+    "control-plane-network-failed",
+    "control-plane-timeout",
+    "control-plane-rate-limited",
+  ] as const) {
+    failure = new CommandStatusError(code);
+    assert.equal(await check(), false);
+  }
+  assert.equal(lines.length, 1, "one line per outage, not per check");
+  assert.match(lines[0], /control plane unavailable \(control-plane-unavailable\)/);
+  failure = undefined;
+  assert.equal(await check(), false);
+  assert.match(lines[1], /answered again/);
+  // An ended lease stops the command, whatever the reason the status failed.
+  failure = new CommandStatusError("control-plane-unavailable");
+  now = lease + 1;
+  await assert.rejects(check(), (error: unknown) =>
+    error instanceof CommandStatusError && error.code === "control-plane-unavailable");
+  lease = undefined;
+  now = 1_000_000;
+  await assert.rejects(check(), CommandStatusError, "an unknown lease is never assumed");
+});
+
+for (const code of [
+  "command-authorization-rejected",
+  "command-lease-unavailable",
+  "control-plane-response-invalid",
+  "control-plane-unexpected",
+] as const)
+  test(`a refusal (${code}) still stops a command at once, with time left on its lease`, async () => {
+    const check = leaseBoundCancellationCheck({
+      status: async () => { throw new CommandStatusError(code); },
+      leaseDeadline: () => Date.now() + 600_000,
+      aborted: () => false,
+      log: { info: () => undefined, warn: () => undefined },
+    });
+    await assert.rejects(check(), (error: unknown) =>
+      error instanceof CommandStatusError && error.code === code);
+  });
+
+test("cancellation and shutdown are still seen through the lease-bound check", async () => {
+  let aborted = false;
+  const cancelled = leaseBoundCancellationCheck({
+    status: async () => ({ cancelled: true }),
+    leaseDeadline: () => Date.now() + 600_000,
+    aborted: () => aborted,
+  });
+  assert.equal(await cancelled(), true);
+  const outage = leaseBoundCancellationCheck({
+    status: async () => { throw new CommandStatusError("control-plane-unavailable"); },
+    leaseDeadline: () => Date.now() + 600_000,
+    aborted: () => aborted,
+    log: { info: () => undefined, warn: () => undefined },
+  });
+  assert.equal(await outage(), false);
+  aborted = true;
+  assert.equal(await outage(), true);
+});
+
+test("the client exposes the lease the server granted, from the status answer", async () => {
+  const leaseExpiresAt = new Date(Date.now() + 600_000).toISOString();
+  const client = new AgentClient(config, identity, {
+    post: async () => ({ success: true, result: { cancelled: false, leaseExpiresAt } }),
+  } as unknown as AgentTransport);
+  assert.equal(client.leaseDeadline("cmd-01", "a".repeat(32)), undefined);
+  await client.commandStatus("cmd-01", "a".repeat(32));
+  assert.equal(client.leaseDeadline("cmd-01", "a".repeat(32)), Date.parse(leaseExpiresAt));
 });

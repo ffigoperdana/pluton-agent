@@ -7,6 +7,7 @@ import {
   readdir,
   realpath,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { constants, type Dirent } from "node:fs";
@@ -90,6 +91,8 @@ const SEALED_ONLY_KEYS = new Set([
 
 export type BackupFilesystemPayload = {
   sourceDiagnosticsVersion?: 1;
+  /** Signed server opt-in: the server accepts `result.sourceWarnings`. */
+  vanishedSourceEntriesVersion?: 1;
   version: 1 | 2 | 3 | 4 | 5;
   lifecycle?: BackupLifecycle;
   backupId: string;
@@ -130,12 +133,38 @@ export type ResticSummary = {
   snapshot_id: string;
 };
 
+/** Entries that existed when Restic scanned the source and were gone when it read
+ * them (for example a rotated attachment). Only a count; never a path. */
+export type SourceWarnings = { vanishedEntries: number };
+
 export type BackupFilesystemResult = {
   snapshotId: string;
   sourcePaths?: string[];
   summary: ResticSummary;
   lifecycle?: LifecycleReport;
+  sourceWarnings?: SourceWarnings;
 };
+
+/** A snapshot is kept when at most this many entries vanished, or at most 1% of
+ * the entries Restic saw, whichever is larger, and never more than 10% of them.
+ * A larger loss still fails the backup as `source-missing`; so does a source
+ * root that is gone or on another filesystem afterwards (an unmounted share). */
+export const VANISHED_SOURCE_ENTRY_FLOOR = 100;
+
+export function vanishedSourceEntriesTolerated(
+  vanishedEntries: number,
+  filesProcessed: number,
+): boolean {
+  if (!Number.isSafeInteger(vanishedEntries) || vanishedEntries < 1)
+    return false;
+  if (!Number.isFinite(filesProcessed) || filesProcessed < 0) return false;
+  const seen = filesProcessed + vanishedEntries;
+  return (
+    vanishedEntries * 10 <= seen &&
+    vanishedEntries <=
+      Math.max(VANISHED_SOURCE_ENTRY_FLOOR, Math.floor(seen / 100))
+  );
+}
 
 export class BackupCancelledError extends Error {
   constructor() {
@@ -220,6 +249,7 @@ export type BackupFilesystemStageEvent = {
     | "target-empty"
     | "repository initialization started"
     | "restic backup started"
+    | "source entries vanished during backup"
     | "backup completed"
     | LifecycleCheckpoint;
 };
@@ -372,6 +402,9 @@ type ProcessResult = {
   targetFailureCode?: RepositoryTargetFailureCode;
   repositoryFailure?: RepositoryDiagnostic;
   outputTruncated?: boolean;
+  /** Set only with `tolerateVanishedSourceEntries`: every Restic error was an entry
+   * inside the source that no longer existed when it was read. */
+  vanishedSourceEntries?: SourceDiagnostics;
 };
 
 type RepositoryDiagnostic =
@@ -415,6 +448,10 @@ type ProcessOptions = {
   onJsonLine?: (value: Record<string, unknown>) => Promise<void>;
   source?: string;
   sourceExcluded?: (relative: string) => boolean;
+  /** `restic backup` with the signed server opt-in only: resolve instead of failing
+   * when Restic saved a snapshot (exit 0 or 3) and its only errors were source
+   * entries, below the root, that vanished between scan and read. */
+  tolerateVanishedSourceEntries?: boolean;
 };
 
 /** S3 SDK codes for a wrong or revoked key. Checked before 403 access, which they also carry. */
@@ -693,6 +730,7 @@ export function parseBackupFilesystemPayload(
     "rclone",
     sealedVersion ? "sealed" : "repositoryPassword",
     "sourceDiagnosticsVersion",
+    "vanishedSourceEntriesVersion",
     ...([2, 3, 4, 5].includes(value.version as number) ? ["lifecycle"] : []),
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
@@ -705,6 +743,11 @@ export function parseBackupFilesystemPayload(
     value.sourceDiagnosticsVersion !== 1
   )
     throw new Error("Source diagnostics version is unsupported.");
+  if (
+    value.vanishedSourceEntriesVersion !== undefined &&
+    value.vanishedSourceEntriesVersion !== 1
+  )
+    throw new Error("Vanished source entries version is unsupported.");
   const repository = asRecord(value.repository, "Repository configuration");
   const rclone = asRecord(value.rclone, "Rclone configuration");
   if (
@@ -751,6 +794,9 @@ export function parseBackupFilesystemPayload(
     version: value.version as BackupFilesystemPayload["version"],
     ...(value.sourceDiagnosticsVersion === 1
       ? { sourceDiagnosticsVersion: 1 as const }
+      : {}),
+    ...(value.vanishedSourceEntriesVersion === 1
+      ? { vanishedSourceEntriesVersion: 1 as const }
       : {}),
     ...(lifecycle ? { lifecycle } : {}),
     backupId: validateId(value.backupId, "Backup ID"),
@@ -1056,14 +1102,25 @@ async function runProgram(
     let stderrBuffer = "";
     let sourceFailure: SourceAccessCode | undefined;
     const sourceDiagnostics = newSourceDiagnostics("restic");
+    // Every Restic JSON error record, classified or not. A vanished entry is
+    // tolerated only when each error record is a missing entry strictly below
+    // the root with a safe relative name (the root itself is never tolerated).
+    let resticErrorRecords = 0;
+    let intolerableMissingEntry = false;
     const consumeSourceLine = (line: string) => {
       if (!options.source) return;
+      if (isResticErrorRecord(line)) resticErrorRecords += 1;
       const problem = sourceProblemFromRestic(
         line,
         options.source,
         options.sourceExcluded,
       );
       if (!problem) return;
+      if (
+        problem.errno === "ENOENT" &&
+        (problem.relativePath === undefined || problem.relativePath === ".")
+      )
+        intolerableMissingEntry = true;
       addSourceProblem(sourceDiagnostics, problem);
       if (!sourceFailure || problem.errno !== "ENOENT")
         sourceFailure =
@@ -1186,7 +1243,19 @@ async function runProgram(
             );
           }
           consumeSourceLine(stderrBuffer);
-          if ((code !== 0 || sourceFailure) && !options.allowFailure) {
+          // Restic exit 3: the snapshot was saved but some source data was not read.
+          const vanishedOnly =
+            options.tolerateVanishedSourceEntries === true &&
+            (code === 0 || code === 3) &&
+            sourceFailure === "source-missing" &&
+            !intolerableMissingEntry &&
+            resticErrorRecords > 0 &&
+            resticErrorRecords === sourceDiagnostics.problemCount;
+          if (
+            (code !== 0 || sourceFailure) &&
+            !options.allowFailure &&
+            !vanishedOnly
+          ) {
             // A fatal S3 storage failure (exit 1 with a backend final error) is why the
             // backup stopped, even when source files were also unreadable. The server
             // accepts per-file source diagnostics only with a source failure code.
@@ -1228,6 +1297,9 @@ async function runProgram(
               : {}),
             ...(options.classifyTargetFailure
               ? { targetFailureCode: classifyTargetFailure(diagnostics) }
+              : {}),
+            ...(vanishedOnly
+              ? { vanishedSourceEntries: sourceDiagnostics }
               : {}),
           });
         },
@@ -1437,6 +1509,18 @@ function numeric(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? value
     : 0;
+}
+
+/** Any Restic JSON error record, whatever it is about. Used only to count them. */
+export function isResticErrorRecord(line: string): boolean {
+  if (!line.includes('"message_type"') || !line.includes('"error"'))
+    return false;
+  try {
+    const record = JSON.parse(line) as { message_type?: unknown } | null;
+    return record?.message_type === "error";
+  } catch {
+    return false;
+  }
 }
 
 /** Only classify JSON source errors, not arbitrary storage/provider text. Raw output stays local in memory. */
@@ -2318,9 +2402,13 @@ export async function executeFilesystemBackup(input: {
       userExcludes,
       input.serverManagedSource === true,
     );
-    await runProgram(restic, args, {
+    const tolerateVanished = payload.vanishedSourceEntriesVersion === 1;
+    // An unmounted share leaves a different (or no) directory at the same path.
+    const sourceDevice = tolerateVanished ? (await stat(source)).dev : undefined;
+    const backupRun = await runProgram(restic, args, {
       env,
       source,
+      tolerateVanishedSourceEntries: tolerateVanished,
       classifyBackupStorageFailure: payload.rclone.type === "s3",
       ...(usesVersion4SourceRules(payload)
         ? {
@@ -2355,6 +2443,37 @@ export async function executeFilesystemBackup(input: {
     // TypeScript cannot observe the assignment performed by the async JSON-line
     // callback, but runProgram awaits that callback chain before returning.
     const completedSummary = summary as ResticSummary;
+    let sourceWarnings: SourceWarnings | undefined;
+    const vanished = backupRun.vanishedSourceEntries;
+    if (vanished) {
+      const sourceGone = () =>
+        new SourceAccessError(
+          "source-missing",
+          undefined,
+          undefined,
+          undefined,
+          vanished,
+        );
+      if (
+        !vanishedSourceEntriesTolerated(
+          vanished.problemCount,
+          completedSummary.total_files_processed,
+        )
+      )
+        throw sourceGone();
+      // The snapshot is kept only if the same root is still there, on the same filesystem.
+      if (
+        (await preflightSource(payload.sourcePath, input.allowedRoots))
+          .resolvedPath !== source ||
+        (await stat(source)).dev !== sourceDevice
+      )
+        throw sourceGone();
+      sourceWarnings = { vanishedEntries: vanished.problemCount };
+      emitStage({
+        stage: "restic-backup",
+        message: "source entries vanished during backup",
+      });
+    }
     if (job) {
       setStage("snapshot-confirmation");
       completedSummary.snapshot_id = await confirmLifecycleSnapshot(
@@ -2373,6 +2492,7 @@ export async function executeFilesystemBackup(input: {
       sourcePaths: [source],
       summary: completedSummary,
       ...(job ? { lifecycle: job.report } : {}),
+      ...(sourceWarnings ? { sourceWarnings } : {}),
     };
     completedResult = result;
     if (job) await lifecycleEvent("backup-completed");
