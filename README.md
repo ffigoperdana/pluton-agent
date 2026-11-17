@@ -1,7 +1,7 @@
 # Pluton Linux Managed Agent
 
 Standalone, outbound-only Linux Managed Agent for the open-source Pluton community
-fork. Agent version **0.8.0**; target **Ubuntu Server 22.04 LTS,
+fork. Agent version **0.8.1**; target **Ubuntu Server 22.04 LTS,
 x86_64, systemd and cgroup v2**. Ubuntu **24.04 LTS** passes disposable userland
 validation; full native support awaits booted-VM acceptance.
 See the [Ubuntu audit and test results](docs/UBUNTU_VALIDATION.md).

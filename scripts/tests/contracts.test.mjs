@@ -23,8 +23,8 @@ test(
   'standalone extraction has no runtime imports or build paths into the monorepo',
   validate,
 );
-test('Agent 0.8.0 retains the original 0.7.0 server request and command HMAC vectors', () => {
-  assert.equal(AGENT_VERSION, '0.8.0');
+test('Agent 0.8.1 retains the original 0.7.0 server request and command HMAC vectors', () => {
+  assert.equal(AGENT_VERSION, '0.8.1');
   const r = contract.request;
   assert.equal(
     signRequest(r.secret, r.timestamp, r.nonce, r.method, r.path, r.body),
