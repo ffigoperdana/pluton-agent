@@ -27,10 +27,11 @@ export const TRANSIENT_COMMAND_STATUS_CODES: ReadonlySet<CommandStatusCode> =
   ]);
 
 /**
- * The cancellation check of a running command. A transient status failure does
- * not stop the work while the lease the server last granted is still running;
- * a refusal, a lost lease or an ended lease does, exactly as before. Logs one
- * line when the outage starts and one when the server answers again.
+ * The periodic cancellation poll of a running Restic upload. A transient status
+ * failure does not stop the upload while the lease the server last granted is
+ * still running; a refusal, a lost lease or an ended lease does, exactly as
+ * before. Stage-boundary checks (such as the post-dump gate) never use it. Logs
+ * one line when the outage starts and one when the server answers again.
  */
 export function leaseBoundCancellationCheck(input: {
   status: () => Promise<{ cancelled: boolean }>;

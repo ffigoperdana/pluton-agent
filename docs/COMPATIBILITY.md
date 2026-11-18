@@ -142,15 +142,18 @@ that run for hours or days.
   unmounted share), or when any other error is present (`EACCES`, `EPERM`, I/O).
   The result carries only the count, never a path. Without the field the Agent
   behaves exactly as 0.8.0.
-- **Short control-plane outages.** A command-status check that fails with
-  `control-plane-unavailable`, `-network-failed`, `-timeout` or `-rate-limited` no
-  longer stops a running command while the lease the server last granted is
-  running; the Agent logs one line when the outage starts and one when the server
-  answers again. A refusal (`command-authorization-rejected`), a lost or ended
-  lease, an invalid answer, cancellation and shutdown stop it exactly as before.
-  The length of the lease is therefore the longest outage a backup survives: a
-  server that renews backup leases for ten minutes gives ten minutes, the
-  60-second lease of older servers about one minute.
+- **Short control-plane outages during the upload.** While `restic backup`
+  uploads, a periodic status poll that fails with `control-plane-unavailable`,
+  `-network-failed`, `-timeout` or `-rate-limited` no longer stops it while the
+  lease the server last granted is running; the Agent logs one line when the
+  outage starts and one when the server answers again. A refusal
+  (`command-authorization-rejected`), a lost or ended lease, an invalid answer,
+  cancellation and shutdown stop it exactly as before. Every stage-boundary check
+  keeps the strict 0.8.0 behaviour, including the post-dump gate before repository
+  preparation and the poll during a database dump: they still fail closed on an
+  outage. The length of the lease is therefore the longest outage an upload
+  survives: a server that renews backup leases for ten minutes gives ten minutes,
+  the 60-second lease of older servers about one minute.
 
 Deploy the server that knows 0.8.1 first (it must list `0.8.1` among its supported
 install versions), then upgrade Agents. Rolling the server back is safe with 0.8.1

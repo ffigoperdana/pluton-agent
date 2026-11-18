@@ -175,9 +175,18 @@ async function runOnceWork(
         successfulSnapshotIds: successfulSnapshotIds(
           identity.completedCommands,
         ),
-        // A short server or network outage (a Pluton restart, a proxy reload) does
-        // not stop the backup while the lease the server granted is running.
-        shouldCancel: leaseBoundCancellationCheck({
+        // Stage boundaries (including the post-dump gate) need an authenticated answer.
+        shouldCancel: async () => {
+          if (signal?.aborted) return true;
+          const status = await client.commandStatus(
+            command.id,
+            command.leaseToken,
+          );
+          return !!signal?.aborted || status.cancelled;
+        },
+        // While Restic uploads, a short server or network outage (a Pluton restart,
+        // a proxy reload) does not stop it before the lease the server granted ends.
+        shouldCancelDuringUpload: leaseBoundCancellationCheck({
           status: () => client.commandStatus(command.id, command.leaseToken),
           leaseDeadline: () =>
             client.leaseDeadline(command.id, command.leaseToken),

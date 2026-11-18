@@ -1969,7 +1969,14 @@ export async function executeFilesystemBackup(input: {
   config: AgentConfig;
   allowedRoots: string[];
   serverManagedSource?: boolean;
+  /** Required status check at every stage boundary (including post-dump): strict. */
   shouldCancel: () => Promise<boolean>;
+  /**
+   * Periodic cancellation poll while `restic backup` uploads, which can run for
+   * days. It may outlive a short control-plane outage within the lease the server
+   * granted (see leaseBoundCancellationCheck). Defaults to `shouldCancel`.
+   */
+  shouldCancelDuringUpload?: () => Promise<boolean>;
   onEvent: (event: Record<string, unknown>) => Promise<void>;
   onStage?: (event: BackupFilesystemStageEvent) => void;
   /** Internal local receipts; never accepted from the remote command payload. */
@@ -2421,7 +2428,7 @@ export async function executeFilesystemBackup(input: {
           }
         : {}),
       ...(job ? { cwd: job.workspace, timeoutMs: 24 * 60 * 60 * 1000 } : {}),
-      shouldCancel: input.shouldCancel,
+      shouldCancel: input.shouldCancelDuringUpload ?? input.shouldCancel,
       onJsonLine: async (event) => {
         const parsedSummary = summaryFromRestic(event);
         if (parsedSummary) {

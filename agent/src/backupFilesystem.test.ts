@@ -2866,3 +2866,46 @@ linuxExecutionTest(
     }
   },
 );
+
+linuxExecutionTest(
+  "the Restic upload is polled through the upload check; stage boundaries keep the strict check",
+  async () => {
+    const fixture = await createExecutionFixture("");
+    try {
+      await writeFile(
+        path.join(fixture.binDir, "restic"),
+        [
+          "#!/usr/bin/env node",
+          "const args = process.argv.slice(2);",
+          "if (args.includes('cat')) console.log(JSON.stringify({version:2,id:'c'.repeat(64)}));",
+          "if (args.includes('backup')) setTimeout(() => {}, 60000);",
+          "",
+        ].join("\n"),
+      );
+      let strictChecks = 0;
+      let uploadChecks = 0;
+      const input = executionInput(fixture);
+      await assert.rejects(
+        executeFilesystemBackup({
+          ...input,
+          shouldCancel: async () => {
+            strictChecks += 1;
+            return false;
+          },
+          shouldCancelDuringUpload: async () => {
+            uploadChecks += 1;
+            return true;
+          },
+        }),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.code === "cancelled" &&
+          error.stage === "restic-backup",
+      );
+      assert.ok(strictChecks >= 1, "stage boundaries still use the strict check");
+      assert.equal(uploadChecks, 1, "the running upload polls only the upload check");
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
