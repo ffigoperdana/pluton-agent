@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { AgentClient } from "./client.js";
+import { leaseBoundCancellationCheck } from "./commandStatus.js";
 import {
   BackupCancelledError,
   BackupFilesystemError,
@@ -174,6 +175,7 @@ async function runOnceWork(
         successfulSnapshotIds: successfulSnapshotIds(
           identity.completedCommands,
         ),
+        // Stage boundaries (including the post-dump gate) need an authenticated answer.
         shouldCancel: async () => {
           if (signal?.aborted) return true;
           const status = await client.commandStatus(
@@ -182,6 +184,14 @@ async function runOnceWork(
           );
           return !!signal?.aborted || status.cancelled;
         },
+        // While Restic uploads, a short server or network outage (a Pluton restart,
+        // a proxy reload) does not stop it before the lease the server granted ends.
+        shouldCancelDuringUpload: leaseBoundCancellationCheck({
+          status: () => client.commandStatus(command.id, command.leaseToken),
+          leaseDeadline: () =>
+            client.leaseDeadline(command.id, command.leaseToken),
+          aborted: () => !!signal?.aborted,
+        }),
         onEvent: async (event) => progress.enqueue(event),
         onStage: ({ stage, message, database, diagnostic }) => {
           progress.enqueue({
@@ -198,6 +208,10 @@ async function runOnceWork(
           );
         },
       });
+      if (result.sourceWarnings)
+        console.warn(
+          `[pluton-agent] BACKUP_FILESYSTEM snapshot kept; ${result.sourceWarnings.vanishedEntries} source entries vanished during the backup and are not in it.`,
+        );
       completion = {
         commandId: command.id,
         sequence: sequence + 1,

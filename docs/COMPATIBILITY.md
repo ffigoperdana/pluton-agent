@@ -20,9 +20,10 @@ The initial extraction preserved the 36 Agent TypeScript source files from the
 Pluton Server commit in `contracts/extraction-source.json`. Subsequent independent
 [HTTPS/enrollment changes](NETWORK_ENROLLMENT.md) use the explicit hash delta
 `contracts/standalone-source-v1.json`; original extraction hashes and server
-golden vectors remain unchanged. The current Agent advertises 0.8.0; original
+golden vectors remain unchanged. The current Agent advertises 0.8.1; original
 0.7.0 HMAC/exclusion vectors remain authoritative and the 0.8.0 S3 vectors are
-additive (see the S3 section below).
+additive (see the S3 section below). 0.8.1 adds no capability and no vector (see
+the 0.8.1 section below).
 The server need not import this repository to run its production backend.
 
 The [post-dump reliability port](POST_DUMP_BACKUP_RELIABILITY_PORT_REPORT.md)
@@ -121,3 +122,39 @@ version 2.
 `contracts/v0.8.0.json` holds the synthetic heartbeat request, a signed version 5
 S3 command and the sealing vector copied verbatim from the approved design; the
 server test suite uses the same sealing vector.
+
+## Long backups (Agent 0.8.1)
+
+Agent 0.8.1 keeps the `pluton-agent-0.8.0` wire contract and adds **no inventory
+capability**, so a server with the strict 0.8.0 schema still accepts its heartbeat
+and the 0.8.0 vectors stay valid. Both changes below matter most for first uploads
+that run for hours or days.
+
+- **Vanished source entries.** A server that knows Agent 0.8.1 adds the signed
+  payload field `vanishedSourceEntriesVersion: 1` (any other value is refused; an
+  Agent older than 0.8.1 refuses the field, so the server sends it by version).
+  With it, when Restic saved a snapshot (exit 0 or 3) and **every** Restic error
+  record was a missing entry strictly below the source root, the Agent keeps the
+  snapshot and completes with `result.sourceWarnings: { vanishedEntries: <count> }`.
+  It still fails as `source-missing` when more entries vanished than the larger of
+  100 and 1% of what Restic saw, when more than 10% vanished, when the root itself
+  is reported, when the root is gone or on another filesystem afterwards (an
+  unmounted share), or when any other error is present (`EACCES`, `EPERM`, I/O).
+  The result carries only the count, never a path. Without the field the Agent
+  behaves exactly as 0.8.0.
+- **Short control-plane outages during the upload.** While `restic backup`
+  uploads, a periodic status poll that fails with `control-plane-unavailable`,
+  `-network-failed`, `-timeout` or `-rate-limited` no longer stops it while the
+  lease the server last granted is running; the Agent logs one line when the
+  outage starts and one when the server answers again. A refusal
+  (`command-authorization-rejected`), a lost or ended lease, an invalid answer,
+  cancellation and shutdown stop it exactly as before. Every stage-boundary check
+  keeps the strict 0.8.0 behaviour, including the post-dump gate before repository
+  preparation and the poll during a database dump: they still fail closed on an
+  outage. The length of the lease is therefore the longest outage an upload
+  survives: a server that renews backup leases for ten minutes gives ten minutes,
+  the 60-second lease of older servers about one minute.
+
+Deploy the server that knows 0.8.1 first (it must list `0.8.1` among its supported
+install versions), then upgrade Agents. Rolling the server back is safe with 0.8.1
+Agents: the field is no longer sent and the Agent behaves as 0.8.0.

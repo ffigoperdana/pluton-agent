@@ -3,7 +3,11 @@ import crypto from "node:crypto";
 import { AgentOperationError } from "./errors.js";
 import { AgentTransport, AgentHttpError } from "./transport.js";
 import { AgentNetworkError } from "./network.js";
-import { CommandStatusError, type CommandStatusCode } from "./commandStatus.js";
+import {
+  CommandStatusError,
+  TRANSIENT_COMMAND_STATUS_CODES,
+  type CommandStatusCode,
+} from "./commandStatus.js";
 import { signRequest, verifyCommandDetailed } from "./protocol.js";
 import type {
   AgentCommandEnvelope,
@@ -170,6 +174,12 @@ export class AgentClient {
     );
   }
 
+  /** End of the lease the server last granted for this command, if one is known. */
+  leaseDeadline(commandId: string, leaseToken: string): number | undefined {
+    const lease = this.leaseDeadlines.get(commandId + ":" + leaseToken);
+    return lease !== undefined && Number.isFinite(lease) ? lease : undefined;
+  }
+
   commandStatus(
     commandId: string,
     leaseToken: string,
@@ -214,10 +224,8 @@ export class AgentClient {
         return { cancelled: result.cancelled };
       } catch (error) {
         const code = commandStatusCode(error);
-        if (attempt === 2 || ![
-          "control-plane-rate-limited", "control-plane-unavailable",
-          "control-plane-timeout", "control-plane-network-failed",
-        ].includes(code)) throw new CommandStatusError(code);
+        if (attempt === 2 || !TRANSIENT_COMMAND_STATUS_CODES.has(code))
+          throw new CommandStatusError(code);
         const delay = attempt === 0 ? 250 : 750;
         if (Date.now() + delay >= Math.min(budget, lease ?? Infinity))
           throw new CommandStatusError(code);

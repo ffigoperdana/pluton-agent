@@ -20,6 +20,7 @@ import {
   executeFilesystemBackup,
   parseBackupFilesystemPayload,
   sweepStaleStorageConfigs,
+  vanishedSourceEntriesTolerated,
   writeTemporaryRcloneConfig,
 } from "./backupFilesystem.js";
 import { SealedSecretsError } from "./sealedSecrets.js";
@@ -2591,6 +2592,318 @@ else if (args.includes("backup")) { process.stderr.write("api error AccessDenied
           error.stage === "restic-backup" &&
           error.code === "restic-backup-failed",
       );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("vanishedSourceEntriesVersion is a signed opt-in: version 1 only", () => {
+  assert.equal(
+    parseBackupFilesystemPayload({
+      ...validPayload,
+      vanishedSourceEntriesVersion: 1,
+    }).vanishedSourceEntriesVersion,
+    1,
+  );
+  assert.equal(
+    parseBackupFilesystemPayload(validPayload).vanishedSourceEntriesVersion,
+    undefined,
+  );
+  for (const value of [2, "1", true, null])
+    assert.throws(
+      () =>
+        parseBackupFilesystemPayload({
+          ...validPayload,
+          vanishedSourceEntriesVersion: value,
+        }),
+      /Vanished source entries version is unsupported/,
+    );
+});
+
+test("vanished entries are tolerated up to 100 or 1% of what Restic saw, never above 10%", () => {
+  assert.equal(vanishedSourceEntriesTolerated(0, 1000), false);
+  assert.equal(vanishedSourceEntriesTolerated(1, 9), true);
+  assert.equal(vanishedSourceEntriesTolerated(1, 8), false, "more than 10%");
+  assert.equal(vanishedSourceEntriesTolerated(14, 0), false, "everything vanished");
+  assert.equal(vanishedSourceEntriesTolerated(100, 66_000), true);
+  assert.equal(vanishedSourceEntriesTolerated(700, 66_000), false);
+  assert.equal(vanishedSourceEntriesTolerated(3_960, 392_700), true);
+  assert.equal(vanishedSourceEntriesTolerated(5_000, 392_700), false);
+  assert.equal(vanishedSourceEntriesTolerated(Number.NaN, 10), false);
+  assert.equal(vanishedSourceEntriesTolerated(1, Number.NaN), false);
+});
+
+function resticWithRecords(input: {
+  records: readonly Record<string, unknown>[];
+  status: number;
+  filesProcessed: number;
+  removeRoot?: string;
+}): string {
+  const removal = input.removeRoot
+    ? "rmSync(" + JSON.stringify(input.removeRoot) + ", { recursive: true, force: true });"
+    : "";
+  return [
+    "#!/usr/bin/env node",
+    'import { rmSync } from "node:fs";',
+    "const args = process.argv.slice(2);",
+    "if (args.includes('cat')) console.log(JSON.stringify({version:2,id:'c'.repeat(64)}));",
+    "if (args.includes('backup')) {",
+    "  for (const record of " +
+      JSON.stringify(input.records) +
+      ') process.stderr.write(JSON.stringify(record) + "\\n");',
+    "  " + removal,
+    '  process.stdout.write(JSON.stringify({message_type:"summary",snapshot_id:"abcdef0123456789",files_new:1,files_changed:0,files_unmodified:0,dirs_new:0,dirs_changed:0,dirs_unmodified:0,data_blobs:1,tree_blobs:1,data_added:10,data_added_packed:10,total_files_processed:' +
+      input.filesProcessed +
+      ',total_bytes_processed:10,total_duration:1}) + "\\n");',
+    "  process.exitCode = " + input.status + ";",
+    "}",
+    "",
+  ].join("\n");
+}
+
+const vanishedRecord = (source: string, relative: string) => ({
+  message_type: "error",
+  during: "archival",
+  item: path.join(source, relative),
+  error: {
+    message: "lstat " + path.join(source, relative) + ": no such file or directory",
+  },
+});
+
+for (const status of [0, 3])
+  linuxExecutionTest(
+    `with the opt-in, entries that vanished mid-backup keep the snapshot (exit ${status})`,
+    async () => {
+      const fixture = await createExecutionFixture("");
+      try {
+        await writeFile(
+          path.join(fixture.binDir, "restic"),
+          resticWithRecords({
+            records: [
+              vanishedRecord(fixture.source, "ab/0123abcd"),
+              vanishedRecord(fixture.source, ".git/index.lock"),
+            ],
+            status,
+            filesProcessed: 1000,
+          }),
+        );
+        const input = executionInput(fixture);
+        const result = await executeFilesystemBackup({
+          ...input,
+          payload: {
+            ...input.payload,
+            sourceDiagnosticsVersion: 1,
+            vanishedSourceEntriesVersion: 1,
+          },
+        });
+        assert.equal(result.snapshotId, "abcdef0123456789");
+        assert.deepEqual(result.sourceWarnings, { vanishedEntries: 2 });
+        assert.ok(
+          !JSON.stringify(result).includes("index.lock"),
+          "no path leaves the Agent",
+        );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+linuxExecutionTest(
+  "without the opt-in, a vanished entry still fails the backup as before",
+  async () => {
+    const fixture = await createExecutionFixture("");
+    try {
+      await writeFile(
+        path.join(fixture.binDir, "restic"),
+        resticWithRecords({
+          records: [vanishedRecord(fixture.source, "ab/0123abcd")],
+          status: 3,
+          filesProcessed: 1000,
+        }),
+      );
+      await assert.rejects(
+        executeFilesystemBackup(executionInput(fixture)),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.code === "source-missing" &&
+          error.stage === "restic-backup",
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+const refusedVanishedCases: {
+  name: string;
+  records: (source: string) => Record<string, unknown>[];
+  status: number;
+  expected: string;
+}[] = [
+  {
+    name: "an unreadable entry next to a vanished one",
+    records: (source) => [
+      vanishedRecord(source, "ab/0123abcd"),
+      {
+        message_type: "error",
+        during: "archival",
+        item: path.join(source, "cd/secret"),
+        error: { message: "open: permission denied" },
+      },
+    ],
+    status: 3,
+    expected: "source-entry-inaccessible",
+  },
+  {
+    name: "a read error that is not a missing entry",
+    records: (source) => [
+      vanishedRecord(source, "ab/0123abcd"),
+      {
+        message_type: "error",
+        during: "archival",
+        item: path.join(source, "nfs/ledger.dat"),
+        error: { message: "read: stale NFS file handle" },
+      },
+    ],
+    status: 3,
+    expected: "source-missing",
+  },
+  {
+    name: "the source root itself",
+    records: (source) => [
+      {
+        message_type: "error",
+        during: "scan",
+        item: source,
+        error: { message: "lstat " + source + ": no such file or directory" },
+      },
+    ],
+    status: 3,
+    expected: "source-missing",
+  },
+  {
+    name: "more vanished entries than the limit",
+    records: (source) =>
+      Array.from({ length: 120 }, (_, index) =>
+        vanishedRecord(source, `ab/file-${index}`),
+      ),
+    status: 3,
+    expected: "source-missing",
+  },
+  {
+    name: "a fatal Restic exit",
+    records: (source) => [vanishedRecord(source, "ab/0123abcd")],
+    status: 1,
+    expected: "source-missing",
+  },
+];
+
+for (const item of refusedVanishedCases)
+  linuxExecutionTest(
+    `with the opt-in, ${item.name} still fails the backup`,
+    async () => {
+      const fixture = await createExecutionFixture("");
+      try {
+        await writeFile(
+          path.join(fixture.binDir, "restic"),
+          resticWithRecords({
+            records: item.records(fixture.source),
+            status: item.status,
+            filesProcessed: 1000,
+          }),
+        );
+        const input = executionInput(fixture);
+        await assert.rejects(
+          executeFilesystemBackup({
+            ...input,
+            payload: {
+              ...input.payload,
+              sourceDiagnosticsVersion: 1,
+              vanishedSourceEntriesVersion: 1,
+            },
+          }),
+          (error: unknown) =>
+            error instanceof BackupFilesystemError &&
+            error.code === item.expected &&
+            error.stage === "restic-backup",
+        );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+linuxExecutionTest(
+  "with the opt-in, a source root gone after the run fails the backup",
+  async () => {
+    const fixture = await createExecutionFixture("");
+    try {
+      await writeFile(
+        path.join(fixture.binDir, "restic"),
+        resticWithRecords({
+          records: [vanishedRecord(fixture.source, "ab/0123abcd")],
+          status: 3,
+          filesProcessed: 1000,
+          removeRoot: fixture.source,
+        }),
+      );
+      const input = executionInput(fixture);
+      await assert.rejects(
+        executeFilesystemBackup({
+          ...input,
+          payload: {
+            ...input.payload,
+            vanishedSourceEntriesVersion: 1,
+          },
+        }),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.code === "source-missing",
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+linuxExecutionTest(
+  "the Restic upload is polled through the upload check; stage boundaries keep the strict check",
+  async () => {
+    const fixture = await createExecutionFixture("");
+    try {
+      await writeFile(
+        path.join(fixture.binDir, "restic"),
+        [
+          "#!/usr/bin/env node",
+          "const args = process.argv.slice(2);",
+          "if (args.includes('cat')) console.log(JSON.stringify({version:2,id:'c'.repeat(64)}));",
+          "if (args.includes('backup')) setTimeout(() => {}, 60000);",
+          "",
+        ].join("\n"),
+      );
+      let strictChecks = 0;
+      let uploadChecks = 0;
+      const input = executionInput(fixture);
+      await assert.rejects(
+        executeFilesystemBackup({
+          ...input,
+          shouldCancel: async () => {
+            strictChecks += 1;
+            return false;
+          },
+          shouldCancelDuringUpload: async () => {
+            uploadChecks += 1;
+            return true;
+          },
+        }),
+        (error: unknown) =>
+          error instanceof BackupFilesystemError &&
+          error.code === "cancelled" &&
+          error.stage === "restic-backup",
+      );
+      assert.ok(strictChecks >= 1, "stage boundaries still use the strict check");
+      assert.equal(uploadChecks, 1, "the running upload polls only the upload check");
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
