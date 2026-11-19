@@ -5,7 +5,8 @@ export type AgentCommandType =
   | "BACKUP_FILESYSTEM"
   | "SOURCE_ACCESS_VALIDATE"
   | "SOURCE_ACCESS_APPLY"
-  | "SOURCE_ACCESS_MODE_SETUP";
+  | "SOURCE_ACCESS_MODE_SETUP"
+  | "RESTORE_FILESYSTEM";
 
 export type SourceAccessValidation = {
   requestedPath: string;
@@ -32,6 +33,21 @@ export type SourceAccessReport = {
   policyError?: string;
 };
 
+/** One host-approved restore root as the heartbeat reports it. No contents, never a selection. */
+export type RestoreRootReport = {
+  path: string;
+  status: "writable" | "unavailable" | "rejected";
+  code?: string;
+  availableBytes?: number;
+  availableInodes?: number;
+};
+
+export type RestoreAccessReport = {
+  version: 1;
+  roots: RestoreRootReport[];
+  policyError?: string;
+};
+
 export type AgentCapabilities = {
   backupExclusionsVersion?: 1;
   filesystemRootsConfigured: boolean;
@@ -45,6 +61,8 @@ export type AgentCapabilities = {
   repositoryBackends?: ("sftp" | "s3")[];
   /** Highest BACKUP_FILESYSTEM payload version this Agent accepts (S3 design 10.1). */
   backupPayloadVersion?: 5;
+  /** Agent 0.9.0: RESTORE_FILESYSTEM payload version 1 into a host-approved restore root. */
+  restoreFilesystemVersion?: 1;
 };
 
 export type AgentInventory = {
@@ -57,6 +75,7 @@ export type AgentInventory = {
   uptimeSeconds?: number;
   capabilities: AgentCapabilities;
   sourceAccess?: SourceAccessReport;
+  restoreAccess?: RestoreAccessReport;
 };
 
 export type StoredCommandCompletion = {
@@ -94,6 +113,8 @@ export type AgentConfig = {
   databaseBinDirs?: string[];
   /** Local administrator-owned maximum. Never accepted from a server command. */
   sourcePolicyFile?: string;
+  /** Local administrator-owned restore roots. Never accepted from a server command. */
+  restorePolicyFile?: string;
   allowInsecureHttp: boolean;
   caFile?: string;
   /**

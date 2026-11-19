@@ -415,14 +415,14 @@ type RepositoryDiagnostic =
   | "invalid-repository"
   | "timeout"
   | "process-failed";
-class ProgramTimeoutError extends Error {
+export class ProgramTimeoutError extends Error {
   constructor(readonly diagnostic?: RepositoryDiagnostic) {
     super("Backup process timed out.");
   }
 }
 
 /** A classified S3 Restic failure; provider text never leaves runProgram. */
-class ProgramExitError extends Error {
+export class ProgramExitError extends Error {
   constructor(readonly storageFailure?: RepositoryTargetFailureCode) {
     super("Backup process failed.");
   }
@@ -433,7 +433,7 @@ type RepositoryTargetFailureCode =
   | "target-check-auth-failed"
   | "target-check-transport-failed";
 
-type ProcessOptions = {
+export type ProcessOptions = {
   maxOutputBytes?: number;
   cwd?: string;
   timeoutMs?: number;
@@ -452,7 +452,16 @@ type ProcessOptions = {
    * when Restic saved a snapshot (exit 0 or 3) and its only errors were source
    * entries, below the root, that vanished between scan and read. */
   tolerateVanishedSourceEntries?: boolean;
+  /**
+   * Restore only: every complete stdout line, in order, decoded as UTF-8 across
+   * chunk boundaries and without the bounded line buffer, for long JSON streams
+   * (`restic ls --json` of a large snapshot). Synchronous; a throw stops the
+   * process and rejects with that error. A single line over 1 MiB is refused.
+   */
+  onStdoutLine?: (line: string) => void;
 };
+
+const MAX_STREAMED_LINE_BYTES = 1024 * 1024;
 
 /** S3 SDK codes for a wrong or revoked key. Checked before 403 access, which they also carry. */
 const S3_AUTHENTICATION_FAILURE = /SignatureDoesNotMatch|InvalidAccessKeyId/;
@@ -519,7 +528,7 @@ function validateId(value: unknown, label: string): string {
   return id;
 }
 
-function validateRepositoryPath(value: unknown): string {
+export function validateRepositoryPath(value: unknown): string {
   const repositoryPath = requiredString(value, "Repository path");
   if (repositoryPath.split(/[\\/]+/).includes("..")) {
     throw new Error("Repository path contains traversal.");
@@ -553,7 +562,7 @@ function validateRcloneOptions(value: unknown): Record<string, string> {
   return result;
 }
 
-function validateSftpPlainOptions(value: unknown): Record<string, string> {
+export function validateSftpPlainOptions(value: unknown): Record<string, string> {
   const input = asRecord(value, "SFTP configuration");
   const result: Record<string, string> = {};
   for (const [key, entry] of Object.entries(input)) {
@@ -568,7 +577,7 @@ function validateSftpPlainOptions(value: unknown): Record<string, string> {
   return result;
 }
 
-function validateS3PlainOptions(value: unknown): Record<string, string> {
+export function validateS3PlainOptions(value: unknown): Record<string, string> {
   const input = asRecord(value, "S3 configuration");
   const result: Record<string, string> = {};
   for (const [key, entry] of Object.entries(input)) {
@@ -611,7 +620,7 @@ function validateS3PlainOptions(value: unknown): Record<string, string> {
 }
 
 /** S3 repositories are a prefix inside a bucket; the bucket root is never a repository. */
-function validateS3RepositoryPath(value: unknown): string {
+export function validateS3RepositoryPath(value: unknown): string {
   const repositoryPath = validateRepositoryPath(value);
   const segments = repositoryPath.split("/");
   if (
@@ -1078,7 +1087,7 @@ function terminateProcessTree(
   return forceKill;
 }
 
-async function runProgram(
+export async function runProgram(
   binary: string,
   args: string[],
   options: ProcessOptions,
@@ -1180,10 +1189,41 @@ async function runProgram(
       }
     };
 
+    let streamedLines = "";
+    let streamFailure: unknown;
+    const streamLine = (line: string) => {
+      if (streamFailure !== undefined) return;
+      try {
+        options.onStdoutLine!(line);
+      } catch (error) {
+        streamFailure = error;
+        forceKill ||= terminateProcessTree(child);
+      }
+    };
+    if (options.onStdoutLine) child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       const text = String(chunk);
       outputBytes += Buffer.byteLength(text);
       stdout = appendBounded(stdout, text, options.maxOutputBytes);
+      if (options.onStdoutLine) {
+        streamedLines += text;
+        let start = 0;
+        for (;;) {
+          const newline = streamedLines.indexOf("\n", start);
+          if (newline < 0) break;
+          streamLine(streamedLines.slice(start, newline));
+          start = newline + 1;
+        }
+        streamedLines = streamedLines.slice(start);
+        if (streamedLines.length > MAX_STREAMED_LINE_BYTES) {
+          streamedLines = "";
+          if (streamFailure === undefined) {
+            streamFailure = new Error("Process output line exceeded the limit.");
+            forceKill ||= terminateProcessTree(child);
+          }
+        }
+        return;
+      }
       stdoutBuffer = appendBounded(stdoutBuffer, text);
       for (;;) {
         const newline = stdoutBuffer.indexOf("\n");
@@ -1226,10 +1266,12 @@ async function runProgram(
       if (deadline) clearTimeout(deadline);
       if (forceKill) clearTimeout(forceKill);
       consumeLine(stdoutBuffer);
+      if (options.onStdoutLine && streamedLines) streamLine(streamedLines);
       void eventChain.then(
         () => {
           if (statusFailure) return reject(statusFailure);
           if (cancelled) return reject(new BackupCancelledError());
+          if (streamFailure !== undefined) return reject(streamFailure);
           // The Agent's own deadline (for example a source read hung on an NFS hard
           // mount) is never a storage failure, for S3 as for SFTP.
           if (timedOut) {
@@ -1310,7 +1352,7 @@ async function runProgram(
 }
 
 /** Authenticate/decrypt the exact repository config, without snapshot enumeration or locks. */
-async function verifyRepository(
+export async function verifyRepository(
   restic: string,
   repository: string,
   env: NodeJS.ProcessEnv,
@@ -1373,7 +1415,7 @@ async function verifyRepository(
  * plain HTTP statuses. A missing prefix lists as empty with exit 0; any other
  * exit, including 3 (missing bucket), fails without a retry loop.
  */
-async function checkS3RepositoryAccess(
+export async function checkS3RepositoryAccess(
   rclone: string,
   target: string,
   env: NodeJS.ProcessEnv,
@@ -1479,7 +1521,7 @@ export async function writeTemporaryRcloneConfig(
   return { directory, configPath };
 }
 
-async function obscureSensitiveSftpOptions(
+export async function obscureSensitiveSftpOptions(
   rclone: string,
   options: Record<string, string>,
   env: NodeJS.ProcessEnv,

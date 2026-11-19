@@ -1,7 +1,7 @@
 # Pluton Linux Managed Agent
 
 Standalone, outbound-only Linux Managed Agent for the open-source Pluton community
-fork. Agent version **0.8.1**; target **Ubuntu Server 22.04 LTS,
+fork. Agent version **0.9.0**; target **Ubuntu Server 22.04 LTS,
 x86_64, systemd and cgroup v2**. Ubuntu **24.04 LTS** passes disposable userland
 validation; full native support awaits booted-VM acceptance.
 See the [Ubuntu audit and test results](docs/UBUNTU_VALIDATION.md).
@@ -27,7 +27,8 @@ never replica keys.
 
 Start with [installation and operations](docs/OPERATIONS.md), then
 [compatibility](docs/COMPATIBILITY.md), [upgrade/rollback](docs/AGENT_UPGRADE.md),
-[releases](docs/RELEASES.md), [S3 repositories](docs/S3_REPOSITORY.md) and the
+[releases](docs/RELEASES.md), [S3 repositories](docs/S3_REPOSITORY.md),
+[restore to this host](docs/HOST_RESTORE.md) and the
 [extraction audit/migration plan](docs/EXTRACTION_AUDIT.md).
 
 ## New host: clone only this repository

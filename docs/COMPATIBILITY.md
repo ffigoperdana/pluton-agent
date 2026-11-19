@@ -20,10 +20,11 @@ The initial extraction preserved the 36 Agent TypeScript source files from the
 Pluton Server commit in `contracts/extraction-source.json`. Subsequent independent
 [HTTPS/enrollment changes](NETWORK_ENROLLMENT.md) use the explicit hash delta
 `contracts/standalone-source-v1.json`; original extraction hashes and server
-golden vectors remain unchanged. The current Agent advertises 0.8.1; original
+golden vectors remain unchanged. The current Agent advertises 0.9.0; original
 0.7.0 HMAC/exclusion vectors remain authoritative and the 0.8.0 S3 vectors are
 additive (see the S3 section below). 0.8.1 adds no capability and no vector (see
-the 0.8.1 section below).
+the 0.8.1 section below); 0.9.0 adds the Agent host restore capability (see the
+last section).
 The server need not import this repository to run its production backend.
 
 The [post-dump reliability port](POST_DUMP_BACKUP_RELIABILITY_PORT_REPORT.md)
@@ -47,6 +48,7 @@ timeouts; TLS and authorization refusals remain terminal.
 | Older server or Agent                   | Capability/version negotiation remains required; no claim that every historic release is supported                                              |
 | Existing monorepo-installed Agent       | Ordinary upgrade REFUSED; explicit `--migrate-monorepo` transaction ([guide](MONOREPO_MIGRATION.md)): exact provenance, same drain/health/rollback   |
 | Existing standalone installation        | App-only upgrade/rollback with its own committed source and distribution marker; real systemd lifecycle NOT TESTED locally                      |
+| Agent 0.9.0 host restore                | Restore policy, payload parser and execution tested with fake Restic/Rclone in a Linux container as an unprivileged user; real Restic/SFTP/S3 restore on a booted host NOT TESTED |
 | Server replication/recovery             | Remains server-only; the Agent receives the S3 key of its own S3-primary plans only; never replica keys or Internal root privileges |
 | ARM64/non-systemd/custom layout         | UNSUPPORTED for these installer/upgrade contracts                                                                                               |
 
@@ -158,3 +160,32 @@ that run for hours or days.
 Deploy the server that knows 0.8.1 first (it must list `0.8.1` among its supported
 install versions), then upgrade Agents. Rolling the server back is safe with 0.8.1
 Agents: the field is no longer sent and the Agent behaves as 0.8.0.
+
+## Restore to an Agent host (Agent 0.9.0)
+
+Agent 0.9.0 adds the command `RESTORE_FILESYSTEM` (payload version 1) and three
+inventory fields, all only on Linux as an unprivileged account with root-owned
+private Restic and Rclone:
+
+- `capabilities.restoreFilesystemVersion: 1`;
+- `RESTORE_FILESYSTEM` in `capabilities.commandTypes` (seven types in total);
+- a top-level `restoreAccess` report:
+  `{ version: 1, roots: [{ path, status, code?, availableBytes?, availableInodes? }], policyError? }`.
+
+The Pluton server validates inventory with a strict schema, so a server without
+Agent host restore support **refuses the 0.9.0 enrollment and heartbeat**, as it
+did for the 0.8.0 S3 fields. Deploy the compatible server first (it must list
+`0.9.0` among its supported install versions), then upgrade Agents; roll back in
+the reverse order, Agent first, then server.
+
+An Agent older than 0.9.0 does not know the command type and would refuse it
+before acknowledging it, so it would be leased again and block that Agent's
+serial queue. The server therefore never queues it without the capability and
+re-checks the capability at poll time. Payload version 1 carries secrets only in
+`sealed`, with the same HKDF-SHA256/AES-256-GCM context as backup payload version 5
+(label, command ID, lease token); the sealed plaintext is exactly
+`{repositoryPassword, rclone}`. Unknown fields, versions, plain secrets, unsafe
+names or selections and roots outside the host policy are refused. Operation,
+safety rules and failure codes: [HOST_RESTORE.md](HOST_RESTORE.md).
+
+Backup payloads 1 to 5, Source Access and the 0.7.0/0.8.0 vectors are unchanged.

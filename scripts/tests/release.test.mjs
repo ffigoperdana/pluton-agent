@@ -50,7 +50,7 @@ test('release checksum verification rejects corruption, traversal, duplicates an
   }
 });
 
-test('release identity accepts the 0.8 series and refuses unsupported versions', (t) => {
+test('release identity accepts the 0.8 and 0.9 series and refuses unsupported versions', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-release-version-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const files = ['example-source.tar.gz', 'example-app.tar.gz'];
@@ -63,9 +63,11 @@ test('release identity accepts the 0.8 series and refuses unsupported versions',
     platform: 'linux-x64',
     artifacts: files.map((file) => ({ file, sha256 })),
   });
-  fs.writeFileSync(path.join(root, 'release-manifest.json'), JSON.stringify(manifest('v0.8.0')));
-  assert.equal(verifyRelease(root).version, 'v0.8.0');
-  for (const version of ['v0.9.0', 'v1.0.0', '0.8.0']) {
+  for (const accepted of ['v0.8.0', 'v0.9.0']) {
+    fs.writeFileSync(path.join(root, 'release-manifest.json'), JSON.stringify(manifest(accepted)));
+    assert.equal(verifyRelease(root).version, accepted);
+  }
+  for (const version of ['v0.10.0', 'v1.0.0', '0.9.0', 'v0.6.0']) {
     fs.writeFileSync(path.join(root, 'release-manifest.json'), JSON.stringify(manifest(version)));
     assert.throws(() => verifyRelease(root), /release identity/);
   }

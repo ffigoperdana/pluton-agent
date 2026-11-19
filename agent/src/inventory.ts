@@ -5,6 +5,7 @@ import { realpathSync } from "node:fs";
 import type {
   AgentCapabilities,
   AgentInventory,
+  RestoreAccessReport,
   SourceAccessReport,
 } from "./types.js";
 import {
@@ -12,7 +13,7 @@ import {
   detectDatabaseBinary,
 } from "./lifecyclePolicy.js";
 
-export const AGENT_VERSION = "0.8.1";
+export const AGENT_VERSION = "0.9.0";
 
 const SAFE_COMMANDS: AgentCapabilities["commandTypes"] = [
   "PING",
@@ -64,6 +65,8 @@ export function collectInventory(input: {
   hookRoot?: string;
   databaseBinDirs?: string[];
   sourceAccess?: SourceAccessReport;
+  /** Host-approved restore roots; advertised with the restore capability only. */
+  restoreAccess?: RestoreAccessReport;
 }): AgentInventory {
   const resticVersion = installedVersion(
     privateBinaryPath(input.binDir, "restic"),
@@ -95,6 +98,16 @@ export function collectInventory(input: {
   } catch {
     /* Optional hooks not provisioned. */
   }
+  // Agent 0.9.0 (server docs/AGENT_HOST_RESTORE.md section 4): the same Linux,
+  // unprivileged and root-owned-tools gate as lifecycle version 2. The server's
+  // strict inventory schema must accept these fields first.
+  const restoreCapable =
+    !!input.restoreAccess &&
+    process.platform === "linux" &&
+    process.getuid?.() !== 0 &&
+    immutableBackupTools &&
+    !!resticVersion &&
+    !!rcloneVersion;
   return {
     hostname: os.hostname(),
     os: `${os.type()} ${os.release()}`,
@@ -104,6 +117,7 @@ export function collectInventory(input: {
     rcloneVersion,
     uptimeSeconds: Math.floor(os.uptime()),
     ...(input.sourceAccess ? { sourceAccess: input.sourceAccess } : {}),
+    ...(restoreCapable ? { restoreAccess: input.restoreAccess } : {}),
     capabilities: {
       backupExclusionsVersion: 1,
       // S3 design 10.1. The server's strict inventory schema must accept these first.
@@ -124,6 +138,7 @@ export function collectInventory(input: {
             hooksConfigured,
           }
         : {}),
+      ...(restoreCapable ? { restoreFilesystemVersion: 1 as const } : {}),
       filesystemRootsConfigured: input.filesystemRootsConfigured,
       commandTypes: [
         ...commandTypesForInventory({
@@ -138,6 +153,7 @@ export function collectInventory(input: {
               "SOURCE_ACCESS_MODE_SETUP",
             ] as const)
           : []),
+        ...(restoreCapable ? (["RESTORE_FILESYSTEM"] as const) : []),
       ],
     },
   };

@@ -1588,13 +1588,14 @@ export function parseSourceAccessEnvironment(raw: string): {
   dataDir: string;
   allowedRoots: string[];
   sourcePolicyFile?: string;
+  restorePolicyFile?: string;
 } {
   if (Buffer.byteLength(raw) > MAX_FILE)
     throw new SourcePolicyError("source-host-config-invalid");
   const values: Record<string, string> = {};
   for (const line of raw.split(/\r?\n/)) {
     const entry =
-      /^(PLUTON_AGENT_(?:DATA_DIR|ALLOWED_ROOTS|SOURCE_POLICY_FILE))=(.*)$/.exec(
+      /^(PLUTON_AGENT_(?:DATA_DIR|ALLOWED_ROOTS|SOURCE_POLICY_FILE|RESTORE_POLICY_FILE))=(.*)$/.exec(
         line.trim(),
       );
     if (!entry) continue;
@@ -1619,7 +1620,9 @@ export function parseSourceAccessEnvironment(raw: string): {
   validateSourcePaths(allowedRoots, true);
   const sourcePolicyFile = values.PLUTON_AGENT_SOURCE_POLICY_FILE;
   if (sourcePolicyFile) validateSourcePaths([sourcePolicyFile]);
-  return { dataDir, allowedRoots, sourcePolicyFile };
+  const restorePolicyFile = values.PLUTON_AGENT_RESTORE_POLICY_FILE;
+  if (restorePolicyFile) validateSourcePaths([restorePolicyFile]);
+  return { dataDir, allowedRoots, sourcePolicyFile, restorePolicyFile };
 }
 
 /** Public helper only for the local CLI: immutable root-owned config read. */

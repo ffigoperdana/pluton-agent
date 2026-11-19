@@ -7,7 +7,7 @@ export function verifyRelease(directory) {
   const manifest = JSON.parse(fs.readFileSync(file));
   if (
     manifest.format !== 1 ||
-    !/^v0\.[78]\.\d+$/.test(manifest.version) ||
+    !/^v0\.[789]\.\d+$/.test(manifest.version) ||
     !/^[a-f0-9]{40}$/.test(manifest.sourceCommit) ||
     manifest.platform !== 'linux-x64' ||
     manifest.artifacts.length !== 2
