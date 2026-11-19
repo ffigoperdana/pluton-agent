@@ -223,7 +223,7 @@
     {
       "file": "agent/src/restoreFilesystem.ts",
       "extractedSha256": null,
-      "sha256": "6316f2d500b2fce539df403bc0c7dcd3ee0e698d38ba8b10139df96d6fc7b1af",
+      "sha256": "fe5394f46a4d23cb6afc52132d670ea852ad3a38bb9e135510ce55ae77a0d99d",
       "reason": "Agent 0.9.0: RESTORE_FILESYSTEM payload version 1 restores one snapshot of the Agent's own managed repository into a new folder inside a host-approved restore root (root-owned /etc/pluton-agent/restore-roots.json bound to the Agent ID, managed by the local root-only restore-roots CLI): secrets sealed with the version 5 HKDF-SHA256/AES-256-GCM context, exact snapshot ID and plan/backup tags, no overlap with source roots, state or system trees, canonical 0700 root owned by the Agent account below root-owned ancestors, exclusive new <name>.partial folder, byte and inode precheck, restic restore --overwrite never --verify, database artifact SHA-256 check, rename only after success, cancellation and lease-bounded status as for backups; never overwrites, chowns or deletes restored data. Inventory advertises restoreFilesystemVersion 1, RESTORE_FILESYSTEM and the restoreAccess report only with root-owned private tools as an unprivileged Linux account."
     },
     {

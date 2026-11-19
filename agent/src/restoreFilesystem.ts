@@ -254,7 +254,8 @@ export function parseRestoreFilesystemPayload(
   exactKeys(selection, ["includes", "excludes"]);
   const includes = selectionList(selection.includes);
   const excludes = selectionList(selection.excludes);
-  // Restic restore cannot combine --include with --exclude; a selection is one or the other.
+  // A selection is includes or excludes, never both, so the exact-path size
+  // accounting below and Restic's own filters always describe the same set.
   if (includes.length && excludes.length)
     throw new Error("Restore selection cannot combine includes and excludes.");
   if (
