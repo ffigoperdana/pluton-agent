@@ -238,6 +238,14 @@ without a database job has no Agent deadline, so a run that Restic keeps retryin
 (seen with an endpoint answering 503 to every request) stays running until it is
 cancelled. Stage 3 failover must not rely on the failure code for these cases.
 
+## Restore to this host (Agent 0.9.0)
+
+Pluton can ask the Agent to restore a snapshot of one of its own plans directly
+on this host into a new folder inside a restore root the host administrator
+approved with `restore-roots approve`. Nothing is restored in place, overwritten
+or deleted, and restored files are owned by `pluton-agent`. See
+[restore to an Agent host](HOST_RESTORE.md).
+
 ## Exclusions, DB and hooks
 
 Agent 0.7.0 advertises `backupExclusionsVersion: 1`; configured exclusions require

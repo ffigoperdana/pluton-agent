@@ -31,6 +31,7 @@ export function createAgentConfig(input: {
   hookRoot?: string;
   databaseBinDirs?: string;
   sourcePolicyFile?: string;
+  restorePolicyFile?: string;
   storageCaFile?: string;
 }): AgentConfig {
   if (
@@ -89,6 +90,9 @@ export function createAgentConfig(input: {
     sourcePolicyFile: input.sourcePolicyFile
       ? path.resolve(input.sourcePolicyFile)
       : undefined,
+    restorePolicyFile: input.restorePolicyFile
+      ? path.resolve(input.restorePolicyFile)
+      : undefined,
     storageCaFile: input.storageCaFile
       ? path.resolve(input.storageCaFile)
       : undefined,
@@ -112,6 +116,7 @@ export function configFromEnvironment(
     hookRoot: overrides.PLUTON_AGENT_HOOK_ROOT,
     databaseBinDirs: overrides.PLUTON_AGENT_DATABASE_BIN_DIRS,
     sourcePolicyFile: overrides.PLUTON_AGENT_SOURCE_POLICY_FILE,
+    restorePolicyFile: overrides.PLUTON_AGENT_RESTORE_POLICY_FILE,
     storageCaFile: overrides.PLUTON_AGENT_STORAGE_CA_FILE,
   });
 }

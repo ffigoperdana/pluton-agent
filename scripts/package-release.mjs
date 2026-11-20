@@ -24,7 +24,7 @@ const sourceCommit = git('rev-parse', '--verify', 'HEAD^{commit}')
   .trim();
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'))),
   version = 'v' + pkg.version;
-if (!/^v0\.[78]\.\d+$/.test(version) || !/^[a-f0-9]{40}$/.test(sourceCommit))
+if (!/^v0\.[789]\.\d+$/.test(version) || !/^[a-f0-9]{40}$/.test(sourceCommit))
   throw Error('Unsupported release identity');
 const epoch = git('show', '-s', '--format=%ct', 'HEAD').toString().trim();
 if (!/^\d+$/.test(epoch)) throw Error('Invalid source date');

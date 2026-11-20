@@ -24,6 +24,13 @@ import {
   SourceAccessPolicy,
   readSourceAccessEnvironment,
 } from "./sourceAccessPolicy.js";
+import {
+  RestorePolicyError,
+  changeRestoreRoots,
+  knownSourceRoots,
+  restoreAccessReport,
+} from "./restorePolicy.js";
+import type { AgentConfig } from "./types.js";
 
 function readOption(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -71,6 +78,94 @@ function usage(): void {
   console.log(
     "       pluton-agent source-access <approve|revoke|recover-selection|delegate|host-approved> --config-file /etc/pluton-agent.env --agent-id <id> --expected-host-policy-revision <sha256> [--root <canonical-directory> ... | --request-id <id>] [--confirm-drained] [--confirm-delegation] (explicit local host operator only)",
   );
+  console.log(
+    "       pluton-agent restore-roots <list|approve|revoke> --config-file /etc/pluton-agent.env --agent-id <id> [--root <existing 0700 directory owned by pluton-agent> ...] (explicit local host operator only)",
+  );
+}
+
+/** Host administrator only: list, approve or revoke host-approved restore roots. */
+async function restoreRootsCommand(args: string[]): Promise<void> {
+  const [action, ...options] = args;
+  if (!["list", "approve", "revoke"].includes(action))
+    throw new Error("A narrow restore-roots operation is required.");
+  const allowed = new Set(["--config-file", "--agent-id", "--root"]);
+  for (let index = 0; index < options.length; index++) {
+    if (
+      !allowed.has(options[index]) ||
+      !options[index + 1] ||
+      options[index + 1].startsWith("--")
+    )
+      throw new Error("Invalid restore-roots options.");
+    index++;
+  }
+  for (const name of ["--config-file", "--agent-id"])
+    if (options.filter((value) => value === name).length > 1)
+      throw new Error("Repeated restore-roots option.");
+  const roots = options.flatMap((value, index) =>
+    value === "--root" ? [options[index + 1]] : [],
+  );
+  if (action === "list" ? roots.length > 0 : roots.length === 0)
+    throw new Error(
+      action === "list"
+        ? "Listing does not take --root."
+        : "At least one --root is required.",
+    );
+  const localConfig = await readSourceAccessEnvironment(
+    readOption(options, "--config-file") || "/etc/pluton-agent.env",
+  );
+  const identity = await loadIdentity(localConfig.dataDir);
+  const agentId = readOption(options, "--agent-id") || "";
+  if (agentId !== identity.agentId)
+    throw new Error("Agent identity must match the enrolled Agent.");
+  // This operation is local only; it never connects to this placeholder origin.
+  const config = {
+    ...localConfig,
+    serverUrl: new URL("https://example.invalid"),
+    allowInsecureHttp: false,
+  } as AgentConfig;
+  const uid = (await lstat(localConfig.dataDir)).uid;
+  const sourceReport = await new SourceAccessPolicy({
+    config,
+    agentId,
+    uid,
+  }).report();
+  const context = {
+    config,
+    agentId,
+    uid,
+    sourceRoots: knownSourceRoots(config, sourceReport),
+  };
+  if (action === "list") {
+    console.log(JSON.stringify(await restoreAccessReport(context)));
+    return;
+  }
+  if (sourceReport.policyError)
+    throw new Error(
+      `Source policy is unavailable (${sourceReport.policyError}); restore roots cannot be checked against source roots.`,
+    );
+  try {
+    const result = await changeRestoreRoots(context, {
+      action: action as "approve" | "revoke",
+      roots,
+    });
+    console.log(
+      JSON.stringify({
+        ...result,
+        advice:
+          "Pluton sees the change at the next heartbeat. Restores create a new folder inside an approved root; files are owned by pluton-agent and are never moved, chowned or deleted by Pluton.",
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof RestorePolicyError)) throw error;
+    console.error(
+      JSON.stringify({
+        code: error.code,
+        advice:
+          "Create the root first: install -d -o pluton-agent -g pluton-agent -m 0700 <path>, below root-owned directories, outside every source root and system tree. No permissions were changed.",
+      }),
+    );
+    process.exitCode = 1;
+  }
 }
 
 async function main(): Promise<void> {
@@ -200,6 +295,10 @@ async function main(): Promise<void> {
         }),
       );
     }
+    return;
+  }
+  if (command === "restore-roots") {
+    await restoreRootsCommand(args);
     return;
   }
   if (command === "preflight") {

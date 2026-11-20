@@ -37,16 +37,34 @@ test("advertises BACKUP_FILESYSTEM only with roots and both private tools", () =
   );
 });
 
-test("advertises S3 repositories and backup payload version 5 as Agent 0.8.1 with no new capability", () => {
+test("advertises S3 repositories and backup payload version 5 as Agent 0.9.0", () => {
   const inventory = collectInventory({
     filesystemRootsConfigured: false,
     binDir: path.join(os.tmpdir(), "pluton-agent-absent-private-tools"),
   });
-  assert.equal(AGENT_VERSION, "0.8.1");
-  assert.equal(inventory.agentVersion, "0.8.1");
-  // 0.8.1 is negotiated by version and a signed payload field, so an older
-  // server with a strict capability schema still accepts its heartbeat.
+  assert.equal(AGENT_VERSION, "0.9.0");
+  assert.equal(inventory.agentVersion, "0.9.0");
+  // 0.8.1 is negotiated by version and a signed payload field.
   assert.equal("vanishedSourceEntriesVersion" in inventory.capabilities, false);
   assert.deepEqual(inventory.capabilities.repositoryBackends, ["sftp", "s3"]);
   assert.equal(inventory.capabilities.backupPayloadVersion, 5);
+});
+
+test("never advertises host restore without root-owned private tools", () => {
+  // Restore needs the same Linux, unprivileged, root-owned-tools gate as
+  // lifecycle version 2; absent tools never advertise it, even with roots.
+  const inventory = collectInventory({
+    filesystemRootsConfigured: true,
+    binDir: path.join(os.tmpdir(), "pluton-agent-absent-private-tools"),
+    restoreAccess: {
+      version: 1,
+      roots: [{ path: "/srv/pluton-restore", status: "writable" }],
+    },
+  });
+  assert.equal("restoreFilesystemVersion" in inventory.capabilities, false);
+  assert.equal("restoreAccess" in inventory, false);
+  assert.equal(
+    inventory.capabilities.commandTypes.includes("RESTORE_FILESYSTEM"),
+    false,
+  );
 });

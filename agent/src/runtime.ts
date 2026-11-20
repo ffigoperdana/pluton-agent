@@ -20,6 +20,12 @@ import type { AgentConfig, StoredAgentIdentity } from "./types.js";
 import { ProgressDelivery, backupProgressStage } from "./progressDelivery.js";
 import { successfulSnapshotIds } from "./resticParent.js";
 import { SourceAccessPolicy, SourcePolicyError } from "./sourceAccessPolicy.js";
+import { knownSourceRoots, restoreAccessReport } from "./restorePolicy.js";
+import {
+  RestoreFilesystemError,
+  executeFilesystemRestore,
+  restoreProgressStage,
+} from "./restoreFilesystem.js";
 import { UPGRADE_PROTOCOL, upgradeHeld } from "./upgradeGuard.js";
 
 /** Installer validation must not lease or execute queued work. Identity is only read. */
@@ -39,6 +45,14 @@ export async function checkConnection(config: AgentConfig): Promise<void> {
     (await atAgentStage("resolve-allowed-roots", () =>
       resolveAllowedRoots(config.allowedRoots),
     ));
+  const restoreAccess =
+    process.platform === "linux"
+      ? await restoreAccessReport({
+          config,
+          agentId: identity.agentId,
+          sourceRoots: knownSourceRoots(config, sourceAccess),
+        })
+      : undefined;
   await atAgentStage("heartbeat", () =>
     new AgentClient(config, identity).heartbeat(
       collectInventory({
@@ -47,6 +61,7 @@ export async function checkConnection(config: AgentConfig): Promise<void> {
         hookRoot: config.hookRoot,
         databaseBinDirs: config.databaseBinDirs,
         sourceAccess,
+        restoreAccess,
       }),
     ),
   );
@@ -59,6 +74,7 @@ const SAFE_COMMANDS = new Set([
   "SOURCE_ACCESS_VALIDATE",
   "SOURCE_ACCESS_APPLY",
   "SOURCE_ACCESS_MODE_SETUP",
+  "RESTORE_FILESYSTEM",
 ]);
 
 function rememberCompletion(
@@ -102,6 +118,14 @@ async function runOnceWork(
       : undefined;
   const sourceAccess = await sourcePolicy?.report();
   const roots = sourceAccess?.effectiveRoots || config.allowedRoots;
+  const restoreAccess =
+    process.platform === "linux"
+      ? await restoreAccessReport({
+          config,
+          agentId: identity.agentId,
+          sourceRoots: knownSourceRoots(config, sourceAccess),
+        })
+      : undefined;
   const client = new AgentClient(config, identity);
   const inventory = collectInventory({
     filesystemRootsConfigured: roots.length > 0,
@@ -109,6 +133,7 @@ async function runOnceWork(
     hookRoot: config.hookRoot,
     databaseBinDirs: config.databaseBinDirs,
     sourceAccess,
+    restoreAccess,
   });
 
   await atAgentStage("heartbeat", () => client.heartbeat(inventory));
@@ -218,6 +243,64 @@ async function runOnceWork(
         success: true,
         result: result as unknown as Record<string, unknown>,
       };
+    } else if (command.type === "RESTORE_FILESYSTEM") {
+      // Linux, unprivileged, with a readable source policy: the overlap rule
+      // needs every source root the Agent knows (docs/AGENT_HOST_RESTORE.md 5.2).
+      if (!sourcePolicy || process.getuid?.() === 0)
+        throw new RestoreFilesystemError(
+          "restore-policy",
+          "restore-policy-invalid",
+        );
+      const currentSource = await sourcePolicy.report();
+      if (currentSource.policyError)
+        throw new RestoreFilesystemError(
+          "restore-policy",
+          "restore-policy-invalid",
+        );
+      const result = await executeFilesystemRestore({
+        payload: command.payload,
+        // client.poll() verified the HMAC with identity.secret; the secrets are
+        // sealed to the same secret, this command ID and this lease token.
+        commandSeal: {
+          secret: identity.secret,
+          commandId: command.id,
+          leaseToken: command.leaseToken,
+        },
+        config,
+        agentId: identity.agentId,
+        sourceRoots: knownSourceRoots(config, currentSource),
+        shouldCancel: async () => {
+          if (signal?.aborted) return true;
+          const status = await client.commandStatus(
+            command.id,
+            command.leaseToken,
+          );
+          return !!signal?.aborted || status.cancelled;
+        },
+        shouldCancelDuringRestore: leaseBoundCancellationCheck({
+          status: () => client.commandStatus(command.id, command.leaseToken),
+          leaseDeadline: () =>
+            client.leaseDeadline(command.id, command.leaseToken),
+          aborted: () => !!signal?.aborted,
+        }),
+        onProgress: (event) => progress.enqueue(event),
+        onStage: (stage) => {
+          progress.enqueue({
+            phase: "running",
+            restoreStage: restoreProgressStage(stage),
+          });
+          console.info(`[pluton-agent] RESTORE_FILESYSTEM stage=${stage}`);
+        },
+      });
+      console.info(
+        `[pluton-agent] RESTORE_FILESYSTEM completed and verified files=${result.filesRestored}`,
+      );
+      completion = {
+        commandId: command.id,
+        sequence: sequence + 1,
+        success: true,
+        result: result as unknown as Record<string, unknown>,
+      };
     } else if (command.type === "SOURCE_ACCESS_MODE_SETUP") {
       if (!sourcePolicy || process.getuid?.() === 0)
         throw new SourcePolicyError(
@@ -272,6 +355,38 @@ async function runOnceWork(
       };
     }
   } catch (error) {
+    if (command.type === "RESTORE_FILESYSTEM") {
+      const restoreFailure =
+        error instanceof RestoreFilesystemError
+          ? error
+          : new RestoreFilesystemError("payload-validation", "unexpected");
+      const restoreCancelled = restoreFailure.code === "cancelled";
+      console.error(
+        `[pluton-agent] RESTORE_FILESYSTEM failed stage=${restoreFailure.stage} code=${restoreFailure.code}`,
+      );
+      completion = {
+        commandId: command.id,
+        sequence: sequence + 1,
+        success: false,
+        cancelled: restoreCancelled,
+        // Restic, Rclone and provider text never leave the host.
+        error: restoreCancelled
+          ? "Restore was cancelled."
+          : "Agent host restore failed.",
+        failureStage: restoreFailure.stage,
+        failureCode: restoreFailure.code,
+      };
+      await progress.flush();
+      completion.sequence = sequence + 1;
+      rememberCompletion(identity, completion);
+      await atAgentStage("save-identity", () =>
+        saveIdentity(config.dataDir, identity),
+      );
+      await atAgentStage("complete", () =>
+        client.complete(command.id, command.leaseToken, completion),
+      );
+      return;
+    }
     const backupFailure =
       error instanceof BackupFilesystemError ? error : undefined;
     const cancelled =

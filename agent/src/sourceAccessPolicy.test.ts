@@ -839,7 +839,18 @@ test("local config literal parser preserves multiple old roots without shell eva
       dataDir: "/var/lib/pluton-agent",
       allowedRoots: ["/srv/example-app", "/srv/example-two"],
       sourcePolicyFile: undefined,
+      restorePolicyFile: undefined,
     },
+  );
+  // Agent 0.9.0: the administrator may move the restore-root policy; validated as a path.
+  assert.equal(
+    parseSourceAccessEnvironment(
+      'PLUTON_AGENT_RESTORE_POLICY_FILE="/etc/pluton-agent/restore-roots.json"\n',
+    ).restorePolicyFile,
+    "/etc/pluton-agent/restore-roots.json",
+  );
+  assert.throws(() =>
+    parseSourceAccessEnvironment('PLUTON_AGENT_RESTORE_POLICY_FILE="relative.json"'),
   );
   assert.throws(() =>
     parseSourceAccessEnvironment(
