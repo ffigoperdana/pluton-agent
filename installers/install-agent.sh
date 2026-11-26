@@ -221,8 +221,9 @@ require_commands() {
 
 validate_os_release() {
 	case "$1:$2" in
-		ubuntu:22.04|ubuntu:24.04) ;;
-		*) fail 'Unsupported operating system. Installer targets Ubuntu Server 22.04 or 24.04 LTS only; 24.04 native VM acceptance is pending. Debian derivatives and other Ubuntu releases are unsupported.' ;;
+		# Exact releases only: no ID_LIKE fallback, so derivatives and other releases stay refused.
+		ubuntu:22.04|ubuntu:24.04|debian:13) ;;
+		*) fail 'Unsupported operating system. Installer targets Ubuntu Server 22.04 or 24.04 LTS and Debian 13 only; native VM acceptance is pending for Ubuntu 24.04 and Debian 13. Other releases and derivatives are unsupported.' ;;
 	esac
 }
 
@@ -274,8 +275,8 @@ compatibility_preflight() {
 		[[ -f "$REPOSITORY_ROOT/$source_file" && ! -L "$REPOSITORY_ROOT/$source_file" ]] || fail 'Incomplete standalone source tree; use a reviewed immutable checkout.'
 	done
 	grep -Eq '"packageManager": *"pnpm@10\.20\.0"' "$REPOSITORY_ROOT/package.json" || fail 'Incompatible source packageManager pin.'
-	log 'PASS local read-only prerequisites: Ubuntu target, x86_64, systemd, unified cgroup v2, utilities, source layout, canonical roots, no existing installation.'
-	log 'Ubuntu 24.04 native VM acceptance is pending. This check does not prove systemd activation, controller limits, service-user ACLs, TLS reachability, source integrity or enrollment.'
+	log 'PASS local read-only prerequisites: supported OS (Ubuntu 22.04/24.04 or Debian 13), x86_64, systemd, unified cgroup v2, utilities, source layout, canonical roots, no existing installation.'
+	log 'Ubuntu 24.04 and Debian 13 native VM acceptance is pending. This check does not prove systemd activation, controller limits, service-user ACLs, TLS reachability, source integrity or enrollment.'
 	log 'Before installation: verify the reviewed immutable commit/CI, DNS/time/CA trust, outbound HTTPS and a fresh authenticated one-time token. No token was read and no network request was sent.'
 }
 

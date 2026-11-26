@@ -3,8 +3,11 @@
 ## Preconditions and trust
 
 Use a new Ubuntu 22.04 x86_64 source host with systemd as its active service manager.
-Ubuntu 24.04 x86_64 is a validation candidate using the same clean-install steps;
-native VM acceptance is pending. Review [OS results](UBUNTU_VALIDATION.md) and the
+Ubuntu 24.04 and Debian 13 x86_64 are validation candidates using the same clean-install
+steps; native VM acceptance is pending. In a Proxmox LXC container the unit sandboxing needs
+the container nesting feature: a start failure with `status=226/NAMESPACE` means enabling
+nesting, never weakening the unit. Review [OS results](UBUNTU_VALIDATION.md),
+[Debian 13 results](DEBIAN_VALIDATION.md) and the
 [native acceptance gate](NATIVE_SYSTEMD_ACCEPTANCE.md) before onboarding.
 The standalone upgrader also requires unified cgroup v2 and the standard installer
 paths. Reserve measured disk for private Node/Corepack, source compilation, app,

@@ -4,7 +4,7 @@ import https from "node:https";
 import net from "node:net";
 import dns from "node:dns";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -208,11 +208,22 @@ test("literal IPv6 HTTPS origin verifies the IP SAN with the pinned security run
   } finally { await f.close(); }
 });
 
+/**
+ * A validity window entirely in the past. OpenSSL 3.4 and later (Debian 13) refuse a negative
+ * -days and offer explicit bounds instead; OpenSSL 3.0 (Ubuntu 22.04/24.04) has only -days.
+ */
+function expiredValidity(): string[] {
+  const help = spawnSync("openssl", ["x509", "-help"], { encoding: "utf8" });
+  return `${help.stdout}${help.stderr}`.includes("-not_after")
+    ? ["-not_before", "20200101000000Z", "-not_after", "20200102000000Z"]
+    : ["-days", "-1"];
+}
+
 test("an expired trusted certificate is rejected before credential-bearing dispatch", async () => {
   const csr = path.join(directory, "expired.csr");
   const expired = path.join(directory, "expired.pem");
   execFileSync("openssl", ["x509", "-x509toreq", "-in", path.join(directory, "cert.pem"), "-signkey", path.join(directory, "key.pem"), "-out", csr], { stdio: "ignore" });
-  execFileSync("openssl", ["x509", "-req", "-in", csr, "-signkey", path.join(directory, "key.pem"), "-days", "-1", "-out", expired], { stdio: "ignore" });
+  execFileSync("openssl", ["x509", "-req", "-in", csr, "-signkey", path.join(directory, "key.pem"), ...expiredValidity(), "-out", expired], { stdio: "ignore" });
   const f = await fixture("127.0.0.1", 200, "{}", readFileSync(expired));
   try {
     await assert.rejects(new AgentTransport({ ...f.config, caFile: expired }, undefined, undefined, { lookup: lookup([v4]) })
