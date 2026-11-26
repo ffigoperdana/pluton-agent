@@ -199,8 +199,8 @@
     {
       "file": "agent/src/transport.test.ts",
       "extractedSha256": null,
-      "sha256": "5aac09c2b79d2f82e98b698241f9fbc3a41c9ebb60696ed0ec5e695ae45ee54f",
-      "reason": "Exercise slow DNS/shared deadlines, verified IPv4/IPv6 including literal IP SANs, expired/untrusted/hostname certificate rejection, reverse-proxy errors, no enrollment replay and safe diagnostics under the pinned security runtime."
+      "sha256": "76585909b09a0dd705341c6d5d05c9ab5d46834d6cd0c78762b0c2ce4d83538f",
+      "reason": "Exercise slow DNS/shared deadlines, verified IPv4/IPv6 including literal IP SANs, expired/untrusted/hostname certificate rejection, reverse-proxy errors, no enrollment replay and safe diagnostics under the pinned security runtime. Debian 13: the expired-certificate fixture uses -not_before/-not_after where OpenSSL 3.4 or later refuses a negative -days (Debian 13 ships OpenSSL 3.5); OpenSSL 3.0 keeps -days -1. Same assertion."
     },
     {
       "file": "agent/src/transport.ts",

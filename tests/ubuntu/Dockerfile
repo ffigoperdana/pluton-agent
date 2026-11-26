@@ -1,9 +1,13 @@
 ARG UBUNTU_VERSION=22.04
+# TARGET_OS selects the userland: ubuntu-22.04, ubuntu-24.04 or debian-13.
+ARG TARGET_OS=ubuntu-${UBUNTU_VERSION}
 FROM ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956 AS ubuntu-22.04
 FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS ubuntu-24.04
-FROM ubuntu-${UBUNTU_VERSION} AS prerequisites
+FROM debian:13@sha256:3cda3ca472ce45507a5109c6a3907093e24d9ae67d55954c9a07a45665dafba2 AS debian-13
+FROM ${TARGET_OS} AS prerequisites
 ARG UBUNTU_VERSION
-LABEL io.pluton.test.scope="standalone-agent-ubuntu${UBUNTU_VERSION}"
+ARG TARGET_OS
+LABEL io.pluton.test.scope="standalone-agent-${TARGET_OS}"
 RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends \
     ca-certificates curl git xz-utils bzip2 unzip locales python3 openssl systemd acl \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
@@ -14,6 +18,7 @@ WORKDIR /workspace
 COPY . .
 FROM prerequisites AS validation
 ARG UBUNTU_VERSION
+ARG TARGET_OS
 RUN touch /opt/pluton-disposable-ubuntu-test && chmod 0600 /opt/pluton-disposable-ubuntu-test \
     && find . -name '*.sh' -type f -exec chmod 0755 {} + \
     && install -m 0755 tests/ubuntu/systemctl-fixture.sh /usr/local/bin/systemctl \
@@ -51,6 +56,7 @@ CMD ["node", "tests/ubuntu/network-routing.mjs"]
 # then exercises the real reviewed upgrader with an explicit manager adapter.
 FROM prerequisites AS runtime-upgrade
 ARG UBUNTU_VERSION
+ARG TARGET_OS
 RUN touch /opt/pluton-disposable-ubuntu-test && chmod 0600 /opt/pluton-disposable-ubuntu-test \
     && find . -name '*.sh' -type f -exec chmod 0755 {} + \
     && install -m 0755 tests/ubuntu/systemctl-fixture.sh /usr/local/bin/systemctl \
@@ -62,6 +68,7 @@ RUN touch /opt/pluton-disposable-ubuntu-test && chmod 0600 /opt/pluton-disposabl
 # See scripts/validate-monorepo-migration.ps1. Not part of default validation.
 FROM prerequisites AS monorepo-migration
 ARG UBUNTU_VERSION
+ARG TARGET_OS
 COPY --from=monorepo . /opt/pluton-monorepo-source
 RUN touch /opt/pluton-disposable-ubuntu-test && chmod 0600 /opt/pluton-disposable-ubuntu-test \
     && find . -name '*.sh' -type f -exec chmod 0755 {} + \

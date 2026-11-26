@@ -333,7 +333,13 @@ test_ubuntu_platform_and_preflight() {
 	for version in 20.04 24.10 26.04 ''; do
 		if ( validate_os_release ubuntu "$version" ) >/dev/null 2>&1; then fail "Untested Ubuntu $version accepted."; fi
 	done
-	if ( validate_os_release debian 12 ) >/dev/null 2>&1; then fail 'Debian accepted.'; fi
+	( TEST_MODE=1 PLUTON_AGENT_TEST_OS=debian PLUTON_AGENT_TEST_VERSION=13; validate_platform ) || fail 'Debian 13 rejected.'
+	for version in 11 12 14 13.1 ''; do
+		if ( validate_os_release debian "$version" ) >/dev/null 2>&1; then fail "Untested Debian $version accepted."; fi
+	done
+	for os in raspbian linuxmint pop kali; do
+		if ( validate_os_release "$os" 13 ) >/dev/null 2>&1; then fail "Derivative $os accepted."; fi
+	done
 	if ( TEST_MODE=1 PLUTON_AGENT_TEST_CGROUP=v1; validate_platform ) >/dev/null 2>&1; then fail 'cgroup v1 accepted.'; fi
 	root="$(make_root preflight)"
 	# Exercise the actual public entry point without root or path configuration.

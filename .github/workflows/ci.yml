@@ -24,7 +24,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ubuntu: ['22.04', '24.04']
+        # Exact userlands the installer accepts (installers/install-agent.sh validate_os_release).
+        target: ['ubuntu-22.04', 'ubuntu-24.04', 'debian-13']
     # The post-dump lab case s3-fails-during-upload waits for Restic's own
     # backend retries to give up (about 20 to 35 minutes, no Restic option
     # bounds it), so the whole job needs more than the old 30 minutes.
@@ -32,19 +33,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Agent-only build context. No production services, host mounts or privileged Docker.
-      - run: docker build --platform linux/amd64 --progress=plain --target validation --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} --file tests/ubuntu/Dockerfile --tag pluton-agent-validation:ci-${{ matrix.ubuntu }} .
-      - run: docker build --platform linux/amd64 --progress=plain --target network-routing --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} --file tests/ubuntu/Dockerfile --tag pluton-agent-routing:ci-${{ matrix.ubuntu }} .
+      - run: docker build --platform linux/amd64 --progress=plain --target validation --build-arg TARGET_OS=${{ matrix.target }} --file tests/ubuntu/Dockerfile --tag pluton-agent-validation:ci-${{ matrix.target }} .
+      - run: docker build --platform linux/amd64 --progress=plain --target network-routing --build-arg TARGET_OS=${{ matrix.target }} --file tests/ubuntu/Dockerfile --tag pluton-agent-routing:ci-${{ matrix.target }} .
       # Traffic control affects this disposable container's private loopback only.
-      - run: docker run --rm --network none --cap-add NET_ADMIN pluton-agent-routing:ci-${{ matrix.ubuntu }}
-      - run: docker build --platform linux/amd64 --progress=plain --target runtime-upgrade --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} --file tests/ubuntu/Dockerfile --tag pluton-agent-runtime-upgrade:ci-${{ matrix.ubuntu }} .
-      - run: docker build --platform linux/amd64 --progress=plain --build-arg TOOL_IMAGE=pluton-agent-validation:ci-${{ matrix.ubuntu }} --file tests/post-dump/Dockerfile --tag pluton-agent-post-dump:ci-${{ matrix.ubuntu }} .
+      - run: docker run --rm --network none --cap-add NET_ADMIN pluton-agent-routing:ci-${{ matrix.target }}
+      - run: docker build --platform linux/amd64 --progress=plain --target runtime-upgrade --build-arg TARGET_OS=${{ matrix.target }} --file tests/ubuntu/Dockerfile --tag pluton-agent-runtime-upgrade:ci-${{ matrix.target }} .
+      - run: docker build --platform linux/amd64 --progress=plain --build-arg TOOL_IMAGE=pluton-agent-validation:ci-${{ matrix.target }} --file tests/post-dump/Dockerfile --tag pluton-agent-post-dump:ci-${{ matrix.target }} .
       - shell: pwsh
-        run: ./scripts/validate-post-dump.ps1 -RuntimeImage pluton-agent-post-dump:ci-${{ matrix.ubuntu }}
+        run: ./scripts/validate-post-dump.ps1 -RuntimeImage pluton-agent-post-dump:ci-${{ matrix.target }}
       # Real Server-monorepo Agent from the public Server repository at its last
       # installer commit (read-only export), then --migrate-monorepo and rollback.
-      - if: matrix.ubuntu == '22.04'
+      - if: matrix.target == 'ubuntu-22.04'
         shell: pwsh
         run: |
           git clone --quiet --filter=blob:none --no-checkout https://github.com/ffigoperdana/pluton.git "$env:RUNNER_TEMP/pluton-server"
-          ./scripts/validate-monorepo-migration.ps1 -MonorepoCheckout "$env:RUNNER_TEMP/pluton-server" -MonorepoCommit c187e2c3a830544d5c44663046519807c2ebc982 -UbuntuVersion ${{ matrix.ubuntu }}
+          ./scripts/validate-monorepo-migration.ps1 -MonorepoCheckout "$env:RUNNER_TEMP/pluton-server" -MonorepoCommit c187e2c3a830544d5c44663046519807c2ebc982 -UbuntuVersion 22.04
       # This workflow validates only. No release, registry, deployment or write permissions.

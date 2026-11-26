@@ -6,7 +6,8 @@
 | --- | --- | --- |
 | Ubuntu Server 22.04 LTS x86_64 | TESTED: fresh install and complete container regression suite; [results](UBUNTU_VALIDATION.md) | Native boot/reboot/cgroup enforcement pending |
 | Ubuntu Server 24.04 LTS x86_64 | TESTED: pinned 24.04.5 container userland, fresh install and complete suite | Full native support pending [booted VM acceptance](NATIVE_SYSTEMD_ACCEPTANCE.md), including exact 24.04.5 Server image |
-| Other Ubuntu releases / Debian / derivatives | Unsupported; fresh installer refuses | No claim |
+| Debian 13 (trixie) x86_64 | TESTED: pinned debian:13 container userland, fresh install and complete suite; [results](DEBIAN_VALIDATION.md) | Native VM and Proxmox LXC acceptance pending |
+| Other Ubuntu or Debian releases / derivatives | Unsupported; fresh installer refuses | No claim |
 | ARM64 / other architectures / non-systemd / cgroup v1 | Unsupported | No claim |
 
 Both installer target releases require the pinned private Linux x64 toolchain,

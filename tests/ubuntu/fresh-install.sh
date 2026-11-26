@@ -5,8 +5,8 @@ set -Eeuo pipefail
 [[ ! -e /workspace/backend && ! -e /workspace/frontend && ! -e /workspace/.git ]] || exit 92
 if command -v node >/dev/null 2>&1; then printf 'Fresh host fixture unexpectedly has global Node\n' >&2; exit 94; fi
 . /etc/os-release
-[[ "$ID" == ubuntu && "$VERSION_ID" == "$UBUNTU_VERSION" && "$(uname -m)" == x86_64 ]]
-printf 'VALIDATION OS: %s; kernel shared with Docker, not a native Ubuntu boot\n' "$PRETTY_NAME"
+[[ "$ID-$VERSION_ID" == "${TARGET_OS:-ubuntu-$UBUNTU_VERSION}" && "$(uname -m)" == x86_64 ]]
+printf 'VALIDATION OS: %s; kernel shared with Docker, not a native boot\n' "$PRETTY_NAME"
 /usr/bin/systemctl --version
 # Drain the producer: head can close early and make pipefail report SIGPIPE (141).
 ldd --version | sed -n '1p'
@@ -98,7 +98,7 @@ import json
 from pathlib import Path
 p=json.loads(Path('/tmp/pluton-install-private/proof.json').read_text())
 assert p == {'enrollments':1,'heartbeats':1,'polls':0}
-print('PASS real fresh Ubuntu source build/install; private TLS enrollment and signed source-release heartbeat; no polling; original state preserved on reinstall refusal')
+print('PASS real fresh source build/install on the target userland; private TLS enrollment and signed source-release heartbeat; no polling; original state preserved on reinstall refusal')
 print('PASS standalone upgrader refuses legacy provenance before Node/activation; no automatic migration')
 print('LIMITATION: disposable systemctl adapter; real systemd/cgroup startup and compatible production server were not tested')
 PY
